@@ -1,4 +1,4 @@
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from loguru import logger
 
 import aiohttp
@@ -78,7 +78,7 @@ class AiohttpBackend(Backend):
             if request.output_token_count is not None:
                 request_args.update(
                     {
-                        "max_completion_tokens": request.output_token_count,
+                        "max_tokens": request.output_token_count,
                         "stop": None,
                         "ignore_eos": True,
                     }
@@ -98,6 +98,10 @@ class AiohttpBackend(Backend):
                     {"role": "user", "content": request.prompt},
                 ],
                 "stream": True,
+                "stream_options": {
+                    "include_usage": True,
+                    "continuous_usage_stats": True,
+                },
                 **request_args,
             }
 
@@ -113,7 +117,8 @@ class AiohttpBackend(Backend):
                         logger.error("Request failed: {} - {}", response.status, error_message)
                         raise Exception(f"Failed to generate response: {error_message}")
 
-                    token_count = 0
+                    completion_usage = 0
+                    prompt_usage = request.prompt_token_count
                     async for chunk_bytes in response.content:
                         chunk_bytes = chunk_bytes.strip()
                         if not chunk_bytes:
@@ -125,22 +130,42 @@ class AiohttpBackend(Backend):
                             yield GenerativeResponse(
                                 type_="final",
                                 prompt=request.prompt,
-                                output_token_count=token_count,
-                                prompt_token_count=request.prompt_token_count,
+                                output_token_count=completion_usage,
+                                prompt_token_count=prompt_usage,
                             )
-                        else:
-                            # Intermediate token response
-                            token_count += 1
-                            data = json.loads(chunk)
-                            delta = data["choices"][0]["delta"]
-                            token = delta["content"]
+                            continue
+
+                        message = json.loads(chunk)
+                        if len(message["choices"]) == 0:
+                            continue
+
+                        token = {}
+                        token["text"] = message["choices"][0]['delta']['content']
+
+                        # If the message has the current usage then record the number of
+                        # tokens, otherwise assume 1 token
+                        current_usage = message["usage"]
+                        token['count'] = current_usage["completion_tokens"] - completion_usage
+                        prompt_usage = current_usage["prompt_tokens"]
+
+                        # Omit responses that don't have
+                        # tokens (or somehow negative tokens)
+                        if token['count'] < 1:
+                            logger.debug("Omiting response '%s' because it contains %d tokens",
+                                        token["text"], token['count'])
+                            continue
+
+                        for _ in range(token['count']):
+                            # Update the total token count
+                            completion_usage += 1
                             yield GenerativeResponse(
                                 type_="token_iter",
-                                add_token=token,
+                                add_token=token["text"],
                                 prompt=request.prompt,
-                                output_token_count=token_count,
-                                prompt_token_count=request.prompt_token_count,
+                                output_token_count=completion_usage,
+                                prompt_token_count=prompt_usage,
                             )
+
             except Exception as e:
                 logger.error("Error while making request: {}", e)
                 raise
