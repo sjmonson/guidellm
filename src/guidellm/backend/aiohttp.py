@@ -1,4 +1,4 @@
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from loguru import logger
 
 import aiohttp
@@ -9,6 +9,26 @@ from guidellm.config import settings
 from guidellm.core import TextGenerationRequest
 
 __all__ = ["AiohttpBackend"]
+
+def deepget(obj: Union[dict, list], *path: Any, default: Any = None) -> Any:
+    """
+    Acts like .get() but for nested objects.
+
+    Each item in path is recusively indexed on obj. For path of length N,
+      obj[path[0]][path[1]]...[path[N-1]][path[N]]
+
+    :param obj: root object to index
+    :param path: ordered list of keys to index recursively
+    :param default: the default value to return if an indexing fails
+    :returns: result of final index or default if Key/Index Error occurs
+    """
+    current = obj
+    for pos in path:
+        try:
+            current = current[pos]
+        except (KeyError, IndexError):
+            return default
+    return current
 
 @Backend.register("aiohttp_server")
 class AiohttpBackend(Backend):
@@ -78,7 +98,7 @@ class AiohttpBackend(Backend):
             if request.output_token_count is not None:
                 request_args.update(
                     {
-                        "max_completion_tokens": request.output_token_count,
+                        "max_tokens": request.output_token_count,
                         "stop": None,
                         "ignore_eos": True,
                     }
@@ -98,6 +118,10 @@ class AiohttpBackend(Backend):
                     {"role": "user", "content": request.prompt},
                 ],
                 "stream": True,
+                "stream_options": {
+                    "include_usage": True,
+                    "continuous_usage_stats": True,
+                },
                 **request_args,
             }
 
@@ -113,7 +137,7 @@ class AiohttpBackend(Backend):
                         logger.error("Request failed: {} - {}", response.status, error_message)
                         raise Exception(f"Failed to generate response: {error_message}")
 
-                    token_count = 0
+                    total_usage = 0
                     async for chunk_bytes in response.content:
                         chunk_bytes = chunk_bytes.strip()
                         if not chunk_bytes:
@@ -125,22 +149,42 @@ class AiohttpBackend(Backend):
                             yield GenerativeResponse(
                                 type_="final",
                                 prompt=request.prompt,
-                                output_token_count=token_count,
+                                output_token_count=total_usage,
                                 prompt_token_count=request.prompt_token_count,
                             )
+                            continue
+
+                        message = json.loads(chunk)
+                        token = {}
+
+                        token["text"] = deepget(message, "choices", 0, 'delta', 'content')
+
+                        # If the message has the current usage then record the number of
+                        # tokens, otherwise assume 1 token
+                        current_usage = deepget(message, "usage", "completion_tokens")
+                        if current_usage != None:
+                            token['count'] = current_usage - total_usage
                         else:
-                            # Intermediate token response
-                            token_count += 1
-                            data = json.loads(chunk)
-                            delta = data["choices"][0]["delta"]
-                            token = delta["content"]
+                            token['count'] = 1
+
+                        # Omit responses that don't have
+                        # tokens (or somehow negative tokens)
+                        if token['count'] < 1:
+                            logger.debug("Omiting response '%s' because it contains %d tokens",
+                                        token["text"], token['count'])
+                            continue
+
+                        for _ in range(token['count']):
+                            # Update the total token count
+                            total_usage += 1
                             yield GenerativeResponse(
                                 type_="token_iter",
-                                add_token=token,
+                                add_token=token["text"],
                                 prompt=request.prompt,
-                                output_token_count=token_count,
+                                output_token_count=total_usage,
                                 prompt_token_count=request.prompt_token_count,
                             )
+
             except Exception as e:
                 logger.error("Error while making request: {}", e)
                 raise
