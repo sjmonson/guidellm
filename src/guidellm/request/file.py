@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Optional, Union
 
@@ -36,12 +37,38 @@ class FileRequestGenerator(RequestGenerator):
     ):
         if not path:
             raise ValueError("File path must be provided for FileRequestGenerator")
-
         self._path = path
-        self._data = load_text_lines(
-            path,
-            filters=settings.dataset.preferred_data_columns,
-        )
+        self._data = []
+        with open(path, "r", encoding="utf-8") as file:
+            # [1:] to skip the first line, it contains metadata
+            lines = file.readlines()[1:]
+            for line in lines:
+                # Load each line as a JSON object
+                try:
+                    json_object = json.loads(line.strip())
+                except json.JSONDecodeError as e:
+                    logger.error("Error decoding JSON in file %s %s", path, e)
+                    continue
+                try:
+                    input_tokens = int(json_object["tok_input_length"])
+                    output_tokens = int(json_object["tok_output_length"])
+                    prompt = json_object["question"]
+                    input_id = json_object["index"]
+                except KeyError as e:
+                    logger.error(
+                        "Unexpected format in dataset file %s, KeyError: %s, \n %s", path, e, json_object
+                    )
+                    continue
+                    # TODO exit or just skip here?
+
+                input_data = {
+                    "text": prompt,
+                    "input_id": input_id,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }
+                self._data.append(input_data)
+
         self._iterator = iter(self._data)
 
         # NOTE: Must be after all the parameters since the queue population
@@ -76,8 +103,11 @@ class FileRequestGenerator(RequestGenerator):
             self._iterator = iter(self._data)
             data = next(self._iterator)
 
-        token_count = len(self.tokenizer.tokenize(data))
-        request = TextGenerationRequest(prompt=data, prompt_token_count=token_count)
+        request = TextGenerationRequest(
+            prompt=data["text"],
+            prompt_token_count=data["input_tokens"],
+            output_token_count=data["output_tokens"],
+        )
         logger.debug("Created new TextGenerationRequest: {}", request)
 
         return request
