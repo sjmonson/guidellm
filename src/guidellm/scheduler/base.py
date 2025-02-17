@@ -3,6 +3,7 @@ import math
 import time
 from dataclasses import dataclass
 from typing import AsyncGenerator, Literal, Optional, Union, get_args
+from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
 
@@ -301,44 +302,48 @@ class Scheduler:
         tasks = []
         completed = 0
 
-        for index, (request, submit_at) in enumerate(
-            zip(self.generator, self.load_generator.times())
-        ):
-            while (index + 1 - completed) >= settings.max_concurrency:
-                await asyncio.sleep(0.1)
+        with ThreadPoolExecutor(max_workers=settings.max_concurrency) as executor:
+            loop = asyncio.get_event_loop()
+            loop.set_default_executor(executor)
 
-            if index >= max_number or time.time() >= end_time or submit_at >= end_time:
-                break
+            for index, (request, submit_at) in enumerate(
+                zip(self.generator, self.load_generator.times())
+            ):
+                while (index + 1 - completed) >= settings.max_concurrency:
+                    await asyncio.sleep(0.1)
 
-            logger.debug(
-                "Running asynchronous request={} at submit_at={}",
-                request,
-                submit_at,
-            )
+                if index >= max_number or time.time() >= end_time or submit_at >= end_time:
+                    break
 
-            def _completed(_task: asyncio.Task) -> None:
-                nonlocal completed
-                completed += 1
-                _res = _task.result()
+                logger.debug(
+                    "Running asynchronous request={} at submit_at={}",
+                    request,
+                    submit_at,
+                )
 
-                if _res:
-                    benchmark.request_completed(_res)
-                    logger.debug("Request completed: {}", _res)
+                def _completed(_task: asyncio.Task) -> None:
+                    nonlocal completed
+                    completed += 1
+                    _res = _task.result()
 
-            benchmark.request_started()
-            task = asyncio.create_task(
-                self._submit_task_coroutine(request, submit_at, end_time)
-            )
-            task.add_done_callback(_completed)
-            tasks.append(task)
+                    if _res:
+                        benchmark.request_completed(_res)
+                        logger.debug("Request completed: {}", _res)
 
-            # release control to the event loop for other tasks
-            await asyncio.sleep(0.001)
+                benchmark.request_started()
+                task = asyncio.create_task(
+                    self._submit_task_coroutine(request, submit_at, end_time)
+                )
+                task.add_done_callback(_completed)
+                tasks.append(task)
 
-        for compl_task in asyncio.as_completed(tasks):
-            task_res = await compl_task
-            if task_res is not None:
-                yield task_res
+                # release control to the event loop for other tasks
+                await asyncio.sleep(0.001)
+
+            for compl_task in asyncio.as_completed(tasks):
+                task_res = await compl_task
+                if task_res is not None:
+                    yield task_res
 
     async def _submit_task_coroutine(
         self, request: TextGenerationRequest, submit_at: float, end_time: float
