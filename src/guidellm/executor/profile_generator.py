@@ -332,10 +332,16 @@ class ProfileGenerator:
             raise err
 
         min_rate = sync_benchmark.completed_request_rate
-        max_rate = throughput_benchmark.completed_request_rate
+
+        start_time = min(result.end_time for result in throughput_benchmark.results)
+        end_time = throughput_benchmark.end_time
+        max_rate = (len(throughput_benchmark.results) - 1) / (end_time - start_time)
+
         intermediate_rates: List[NDArray] = list(
             np.linspace(min_rate, max_rate, settings.num_sweep_profiles + 1)
         )[1:]
+
+        logger.info("Using intermediate rates from {} to {} for sweep: {}", min_rate, max_rate, intermediate_rates)
 
         return Profile(
             load_gen_mode="constant",
