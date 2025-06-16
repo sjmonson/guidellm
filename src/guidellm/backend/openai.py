@@ -9,7 +9,7 @@ import httpx
 from loguru import logger
 from PIL import Image
 
-from guidellm.backend.backend import Backend
+from guidellm.backend.backend import Backend, BackendType
 from guidellm.backend.response import (
     RequestArgs,
     ResponseSummary,
@@ -85,8 +85,9 @@ class OpenAIHTTPBackend(Backend):
         max_output_tokens: Optional[int] = None,
         extra_query: Optional[dict] = None,
         extra_body: Optional[dict] = None,
+        type_: BackendType = "openai_http",
     ):
-        super().__init__(type_="openai_http")
+        super().__init__(type_=type_)
         self._target = target or settings.openai.base_url
 
         if not self._target:
