@@ -122,7 +122,9 @@ class Backend(ABC):
             raise ValueError("No models available for the backend")
 
         async for _ in self.text_completions(
-            prompt="Test connection", output_token_count=1
+            prompts=["Test connection"],
+            output_token_counts=[1],
+            prompt_token_counts=[None],
         ):  # type: ignore[attr-defined]
             pass
 

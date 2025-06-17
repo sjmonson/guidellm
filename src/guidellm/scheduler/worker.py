@@ -429,10 +429,10 @@ class GenerativeRequestsWorker(RequestsWorker[GenerationRequest, ResponseSummary
         if request.request_type == "text_completions":
             request_func = self.backend.text_completions  # type: ignore[assignment]
             request_kwargs = {
-                "prompt": request.content,
+                "prompts": request.content,
                 "request_id": request.request_id,
-                "prompt_token_count": request.stats.get("prompt_tokens", None),
-                "output_token_count": request.constraints.get("output_tokens", None),
+                "prompt_token_counts": request.stats.get("prompt_tokens", []),
+                "output_token_counts": request.constraints.get("output_tokens", []),
                 **request.params,
             }
         elif request.request_type == "chat_completions":
