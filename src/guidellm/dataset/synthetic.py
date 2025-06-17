@@ -72,6 +72,11 @@ class SyntheticDatasetConfig(BaseModel):
         description="The source of the text data to be used for generation.",
         default="data:prideandprejudice.txt.gz",
     )
+    turns: int = Field(
+        description="The number of prompts per row (multiturn).",
+        gt=0,
+        default=1,
+    )
 
     @staticmethod
     def parse_str(data: Union[str, Path]) -> "SyntheticDatasetConfig":
@@ -121,8 +126,8 @@ class SyntheticDatasetConfig(BaseModel):
 class SyntheticTextItemsGenerator(
     Iterable[
         dict[
-            Literal["prompt", "prompt_tokens_count", "output_tokens_count"],
-            Union[str, int],
+            Literal["prompts", "prompt_tokens_count", "output_tokens_count"],
+            Union[list[str], list[int]],
         ]
     ]
 ):
@@ -143,10 +148,11 @@ class SyntheticTextItemsGenerator(
         self,
     ) -> Iterator[
         dict[
-            Literal["prompt", "prompt_tokens_count", "output_tokens_count"],
-            Union[str, int],
+            Literal["prompts", "prompt_tokens_count", "output_tokens_count"],
+            Union[list[str], list[int]],
         ]
     ]:
+        rand = random.Random(self.random_seed + 2)  # noqa: S311
         prompt_tokens_sampler = IntegerRangeSampler(
             average=self.config.prompt_tokens,
             variance=self.config.prompt_tokens_stdev,
@@ -161,19 +167,24 @@ class SyntheticTextItemsGenerator(
             max_value=self.config.output_tokens_max,
             random_seed=self.random_seed + 1,  # ensure diff dist from prompts
         )
-        # ensure diff distribution from output tokens
-        rand = random.Random(self.random_seed + 2)  # noqa: S311
-
-        for _, prompt_tokens, output_tokens in zip(
-            range(self.config.samples),
-            prompt_tokens_sampler,
-            output_tokens_sampler,
-        ):
-            start_index = rand.randint(0, len(self.text_creator.words))
+        prompt_tokens_iter = iter(prompt_tokens_sampler)
+        output_tokens_iter = iter(output_tokens_sampler)
+        for _ in range(self.config.samples):
+            prompts = []
+            prompt_tokens_counts = []
+            output_tokens_counts = []
+            for turn in range(self.config.turns):
+                prompt_tokens = next(prompt_tokens_iter)
+                output_tokens = next(output_tokens_iter)
+                start_index = rand.randint(0, len(self.text_creator.words))
+                prompt = self._create_prompt(prompt_tokens, start_index)
+                prompts.append(prompt)
+                prompt_tokens_counts.append(prompt_tokens)
+                output_tokens_counts.append(output_tokens)
             yield {
-                "prompt": self._create_prompt(prompt_tokens, start_index),
-                "prompt_tokens_count": prompt_tokens,
-                "output_tokens_count": output_tokens,
+                "prompts": prompts,
+                "prompt_tokens_count": prompt_tokens_counts,
+                "output_tokens_count": output_tokens_counts,
             }
 
     def _create_prompt(self, prompt_tokens: int, start_index: int) -> str:
@@ -260,7 +271,7 @@ class SyntheticDatasetCreator(DatasetCreator):
             )
 
         return {
-            "prompt_column": "prompt",
+            "prompt_column": "prompts",
             "prompt_tokens_count_column": "prompt_tokens_count",
             "output_tokens_count_column": "output_tokens_count",
         }

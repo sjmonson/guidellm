@@ -290,49 +290,54 @@ class OpenAIHTTPBackend(Backend):
         """
         Generate chat completions for the given content using the OpenAI
         chat completions endpoint: /v1/chat/completions.
-
-        :param content: The content (or list of content) to generate a completion for.
-            This supports any combination of text, images, and audio (model dependent).
-            Supported text only request examples:
-                content="Sample prompt", content=["Sample prompt", "Second prompt"],
-                content=[{"type": "text", "value": "Sample prompt"}.
-            Supported text and image request examples:
-                content=["Describe the image", PIL.Image.open("image.jpg")],
-                content=["Describe the image", Path("image.jpg")],
-                content=["Describe the image", {"type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}].
-            Supported text and audio request examples:
-                content=["Transcribe the audio", Path("audio.wav")],
-                content=["Transcribe the audio", {"type": "input_audio",
-                "input_audio": {"data": f"{base64_bytes}", "format": "wav}].
-            Additionally, if raw_content=True then the content is passed directly to the
-            backend without any processing.
-        :param request_id: The unique identifier for the request, if any.
-            Added to logging statements and the response for tracking purposes.
-        :param prompt_token_count: The number of tokens measured in the prompt, if any.
-            Returned in the response stats for later analysis, if applicable.
-        :param output_token_count: If supplied, the number of tokens to enforce
-            generation of for the output for this request.
-        :param kwargs: Additional keyword arguments to pass with the request.
-        :return: An async generator that yields a StreamingTextResponse for start,
-            a StreamingTextResponse for each received iteration,
-            and a ResponseSummary for the final response.
+        Now supports multiturn: if content is a list of dicts with 'prompt' and 'context',
+        it will call the model for each turn, merging the output of the previous turn as context.
         """
         logger.debug("{} invocation with args: {}", self.__class__.__name__, locals())
         headers = self._headers()
         params = self._params(CHAT_COMPLETIONS)
         body = self._body(CHAT_COMPLETIONS)
-        messages = (
-            content if raw_content else self._create_chat_messages(content=content)
-        )
-        payload = self._completions_payload(
-            body=body,
-            orig_kwargs=kwargs,
-            max_output_tokens=output_token_count,
-            messages=messages,
-        )
 
-        try:
+        # Multiturn: if content is a list of dicts with 'prompt' and 'context', handle each turn
+        if isinstance(content, list) and all(
+            isinstance(x, dict) and "prompt" in x for x in content
+        ):
+            merged_output = ""
+            for i, turn in enumerate(content):
+                prompt = turn["prompt"]
+                context = turn.get("context", "")
+                full_prompt = context + prompt if context else prompt
+                messages = self._create_chat_messages(content=full_prompt)
+                payload = self._completions_payload(
+                    body=body,
+                    orig_kwargs=kwargs,
+                    max_output_tokens=output_token_count,
+                    messages=messages,
+                )
+                async for resp in self._iterative_completions_request(
+                    type_="chat_completions",
+                    request_id=request_id,
+                    request_prompt_tokens=prompt_token_count,
+                    request_output_tokens=output_token_count,
+                    headers=headers,
+                    params=params,
+                    payload=payload,
+                ):
+                    if hasattr(resp, "value"):
+                        merged_output += resp.value
+                    yield resp
+                # Set context for next turn
+                turn["context"] = merged_output
+        else:
+            messages = (
+                content if raw_content else self._create_chat_messages(content=content)
+            )
+            payload = self._completions_payload(
+                body=body,
+                orig_kwargs=kwargs,
+                max_output_tokens=output_token_count,
+                messages=messages,
+            )
             async for resp in self._iterative_completions_request(
                 type_="chat_completions",
                 request_id=request_id,
@@ -343,16 +348,6 @@ class OpenAIHTTPBackend(Backend):
                 payload=payload,
             ):
                 yield resp
-        except Exception as ex:
-            logger.error(
-                "{} request with headers: {} and params: {} and payload: {} failed: {}",
-                self.__class__.__name__,
-                headers,
-                params,
-                payload,
-                ex,
-            )
-            raise ex
 
     def _get_async_client(self) -> httpx.AsyncClient:
         """

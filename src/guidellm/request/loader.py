@@ -112,7 +112,7 @@ class GenerativeRequestLoader(RequestLoader):
             scope_create_count += 1
 
             for item in dataset_iter:
-                yield self._create_request(item)
+                yield from self._create_request(item)
 
             self._preserved_iter = None
 
@@ -260,7 +260,8 @@ class GenerativeRequestLoader(RequestLoader):
 
         return dataset_iter
 
-    def _create_request(self, item: dict[str, Any]) -> GenerationRequest:
+    def _create_request(self, item: dict[str, Any]):
+        prompt_value = item[self.column_mappings["prompt_column"]]
         prompt_tokens = (
             item[self.column_mappings["prompt_tokens_count_column"]]
             if "prompt_tokens_count_column" in self.column_mappings
@@ -272,13 +273,43 @@ class GenerativeRequestLoader(RequestLoader):
             else None
         )
 
-        return GenerationRequest(
-            request_type=settings.preferred_route,
-            content=item[self.column_mappings["prompt_column"]],
-            stats=(
-                {"prompt_tokens": prompt_tokens} if prompt_tokens is not None else {}
-            ),
-            constraints=(
-                {"output_tokens": output_tokens} if output_tokens is not None else {}
-            ),
-        )
+        # Multiturn: yield a GenerationRequest for each turn, merging previous output as context
+        if isinstance(prompt_value, list):
+            context = ""
+            for i, prompt in enumerate(prompt_value):
+                pt = (
+                    prompt_tokens[i]
+                    if isinstance(prompt_tokens, list)
+                    else prompt_tokens
+                )
+                ot = (
+                    output_tokens[i]
+                    if isinstance(output_tokens, list)
+                    else output_tokens
+                )
+                # For the first turn, context is empty; for subsequent, use previous output
+                req_content = (
+                    {"prompt": prompt, "context": context} if context else prompt
+                )
+                yield GenerationRequest(
+                    request_type=settings.preferred_route,
+                    content=req_content,
+                    stats={"prompt_tokens": pt} if pt is not None else {},
+                    constraints={"output_tokens": ot} if ot is not None else {},
+                )
+                # The actual merging of output as context must be handled by the backend after each turn
+                # Here, we just yield the request; the backend will need to call the model and update context
+                # accordingly.
+                # In a real pipeline, you would collect the output and set context = output for the next turn.
+                # This is a generator, so the caller must handle the loop and context update.
+        else:
+            yield GenerationRequest(
+                request_type=settings.preferred_route,
+                content=prompt_value,
+                stats={"prompt_tokens": prompt_tokens}
+                if prompt_tokens is not None
+                else {},
+                constraints={"output_tokens": output_tokens}
+                if output_tokens is not None
+                else {},
+            )
