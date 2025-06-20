@@ -267,9 +267,6 @@ def process_dataset(
     """
 
     _validate_output_suffix(output_path)
-    logger.info(
-        f"Starting dataset conversion | Input: {data} | Output directory: {output_path}"
-    )
 
     dataset, column_mappings = guidellm_load_dataset(
         data, data_args, processor, processor_args
@@ -342,15 +339,11 @@ def process_dataset(
         logger.error("No prompts remained after processing")
         return
 
-    logger.info(f"Generated processed dataset with {len(processed_prompts)} prompts")
-
     processed_dataset = Dataset.from_list(processed_prompts)
     save_dataset_to_file(processed_dataset, output_path)
-    logger.info(f"Conversion completed. Dataset saved to: {output_path}")
 
     if push_to_hub:
         push_dataset_to_hub(hub_dataset_id, processed_dataset)
-        logger.info(f"Pushed dataset to: {hub_dataset_id}")
 
 
 def push_dataset_to_hub(

@@ -243,7 +243,6 @@ class OpenAIHTTPBackend(Backend):
             a StreamingTextResponse for each received iteration,
             and a ResponseSummary for the final response.
         """
-        logger.debug("{} invocation with args: {}", self.__class__.__name__, locals())
 
         if isinstance(prompt, list):
             raise ValueError(
@@ -327,7 +326,6 @@ class OpenAIHTTPBackend(Backend):
             a StreamingTextResponse for each received iteration,
             and a ResponseSummary for the final response.
         """
-        logger.debug("{} invocation with args: {}", self.__class__.__name__, locals())
         headers = self._headers()
         params = self._params(CHAT_COMPLETIONS)
         body = self._body(CHAT_COMPLETIONS)
@@ -441,11 +439,6 @@ class OpenAIHTTPBackend(Backend):
         }
 
         if max_output_tokens or self.max_output_tokens:
-            logger.debug(
-                "{} adding payload args for setting output_token_count: {}",
-                self.__class__.__name__,
-                max_output_tokens or self.max_output_tokens,
-            )
             payload["max_tokens"] = max_output_tokens or self.max_output_tokens
             payload["max_completion_tokens"] = payload["max_tokens"]
 
@@ -536,21 +529,6 @@ class OpenAIHTTPBackend(Backend):
         else:
             raise ValueError(f"Unsupported type: {type_}")
 
-        logger.info(
-            "{} making request: {} to target: {} using http2: {} following "
-            "redirects: {} for timeout: {} with headers: {} and params: {} and ",
-            "payload: {}",
-            self.__class__.__name__,
-            request_id,
-            target,
-            self.http2,
-            self.follow_redirects,
-            self.timeout,
-            headers,
-            params,
-            payload,
-        )
-
         response_value = ""
         response_prompt_count: Optional[int] = None
         response_output_count: Optional[int] = None
@@ -581,12 +559,6 @@ class OpenAIHTTPBackend(Backend):
 
             async for line in stream.aiter_lines():
                 iter_time = time.time()
-                logger.debug(
-                    "{} request: {} recieved iter response line: {}",
-                    self.__class__.__name__,
-                    request_id,
-                    line,
-                )
 
                 if not line or not line.strip().startswith("data:"):
                     continue
@@ -617,17 +589,6 @@ class OpenAIHTTPBackend(Backend):
                 if usage := self._extract_completions_usage(data):
                     response_prompt_count = usage["prompt"]
                     response_output_count = usage["output"]
-
-        logger.info(
-            "{} request: {} with headers: {} and params: {} and payload: {} completed"
-            "with: {}",
-            self.__class__.__name__,
-            request_id,
-            headers,
-            params,
-            payload,
-            response_value,
-        )
 
         yield ResponseSummary(
             value=response_value,

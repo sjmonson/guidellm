@@ -49,7 +49,6 @@ class Backend(ABC):
 
         def inner_wrapper(wrapped_class: type["Backend"]):
             cls._registry[backend_type] = wrapped_class
-            logger.info("Registered backend type: {}", backend_type)
             return wrapped_class
 
         return inner_wrapper
@@ -66,8 +65,6 @@ class Backend(ABC):
         :rtype: Backend
         :raises ValueError: If the backend type is not registered.
         """
-
-        logger.info("Creating backend of type {}", type_)
 
         if type_ not in cls._registry:
             err = ValueError(f"Unsupported backend type: {type_}")
@@ -123,7 +120,6 @@ class Backend(ABC):
         Handle final setup and validate the backend is ready for use.
         If not successful, raises the appropriate exception.
         """
-        logger.info("{} validating backend {}", self.__class__.__name__, self.type_)
         await self.check_setup()
         models = await self.available_models()
         if not models:

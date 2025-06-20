@@ -7,7 +7,6 @@ from typing import Any, Optional, Union
 
 import ftfy
 import httpx
-from loguru import logger
 
 from guidellm import data as package_data
 from guidellm.config import settings
@@ -135,7 +134,6 @@ def load_text(data: Union[str, Path], encoding: Optional[str] = None) -> str:
     :return: the HTML content
     :rtype: str
     """
-    logger.debug("Loading text: {}", data)
 
     if not data:
         return ""
