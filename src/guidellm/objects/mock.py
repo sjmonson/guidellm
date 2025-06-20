@@ -2,14 +2,26 @@ import sys
 from importlib.abc import Loader
 from importlib.util import module_from_spec, spec_from_loader
 from types import ModuleType
+from typing import Union
 
 
 class Dummy:
-    def __getattribute__(self, name):
+    def __getattr__(self, name):
         return type(self)()
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args, **kwargs):  # noqa: ARG002
         return type(self)()
+
+    def print_line(
+        self,
+        value: Union[str, list[str]],
+        style: Union[str, list[str]] = "",
+        indent: int = 0,
+        new_lines: int = 0,
+    ):
+        if isinstance(value, list):
+            value = "\n".join(value)
+        print(value)
 
 
 class MockModule(ModuleType):
