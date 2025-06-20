@@ -8,9 +8,6 @@ from typing import Any, Literal, Optional, Union
 
 import yaml
 from pydantic import Field
-from rich.console import Console
-from rich.padding import Padding
-from rich.text import Text
 
 from guidellm.benchmark.benchmark import GenerativeBenchmark, GenerativeMetrics
 from guidellm.benchmark.profile import (
@@ -25,6 +22,7 @@ from guidellm.objects import (
     StandardBaseModel,
     StatusDistributionSummary,
 )
+from guidellm.objects.mock import Console, Padding, Text
 from guidellm.scheduler import strategy_display_str
 from guidellm.utils import Colors, split_text_list_by_length
 

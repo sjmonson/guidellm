@@ -4,11 +4,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Generic, Optional, TypeVar, Union
 
-from rich.console import Group
-from rich.live import Live
-from rich.panel import Panel
-from rich.progress import (
+from guidellm.benchmark.aggregator import (
+    BenchmarkAggregator,
+    GenerativeBenchmarkAggregator,
+)
+from guidellm.benchmark.benchmark import Benchmark, GenerativeBenchmark
+from guidellm.benchmark.benchmarker import BenchmarkerResult
+from guidellm.objects.mock import (
     BarColumn,
+    Group,
+    Live,
+    Panel,
     Progress,
     ProgressColumn,
     SpinnerColumn,
@@ -18,13 +24,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
-from guidellm.benchmark.aggregator import (
-    BenchmarkAggregator,
-    GenerativeBenchmarkAggregator,
-)
-from guidellm.benchmark.benchmark import Benchmark, GenerativeBenchmark
-from guidellm.benchmark.benchmarker import BenchmarkerResult
 from guidellm.scheduler import (
     SchedulingStrategy,
     StrategyType,
