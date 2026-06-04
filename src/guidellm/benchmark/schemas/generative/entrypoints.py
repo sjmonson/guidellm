@@ -20,7 +20,6 @@ import yaml
 from pydantic import (
     AliasChoices,
     AliasGenerator,
-    ConfigDict,
     Field,
     NonNegativeFloat,
     ValidationError,
@@ -41,7 +40,7 @@ from guidellm.data import (
     DataTokenizerArgs,
 )
 from guidellm.scheduler import StrategyType
-from guidellm.schemas import StandardBaseModel
+from guidellm.schemas import StandardBaseModel, standard_model_config
 
 __all__ = [
     "BenchmarkGenerativeTextArgs",
@@ -153,11 +152,8 @@ class BenchmarkGenerativeTextArgs(StandardBaseModel):
         else:
             return factory({})  # type: ignore[call-arg]
 
-    model_config = ConfigDict(
+    model_config = standard_model_config(
         extra="ignore",
-        use_enum_values=True,
-        from_attributes=True,
-        arbitrary_types_allowed=True,
         validate_by_alias=True,
         validate_by_name=True,
         alias_generator=AliasGenerator(
