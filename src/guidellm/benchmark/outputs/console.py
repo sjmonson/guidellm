@@ -22,6 +22,7 @@ from rich.text import Text
 from guidellm.benchmark.analysis import KneeDetectionConclusion
 from guidellm.benchmark.outputs.output import GenerativeBenchmarkerOutput
 from guidellm.benchmark.schemas import GenerativeBenchmarksReport
+from guidellm.benchmark.schemas.metrics import SpeculativeMetricSummary
 from guidellm.benchmark.schemas.warnings import BenchmarkWarning
 from guidellm.schemas import DistributionSummary, StatusDistributionSummary
 from guidellm.schemas.benchmark import BenchmarkOutputArgs
@@ -317,6 +318,8 @@ class GenerativeBenchmarkerConsole(GenerativeBenchmarkerOutput):
         self.print_audio_table(report)
         self.print_tool_call_table(report)
         self.print_request_counts_table(report)
+        self.print_speculative_decoding_table(report)
+        self.print_speculative_positions_table(report)
         self.print_request_latency_table(report)
         self.print_server_throughput_table(report)
         self.print_slo_attainment_table(report)
@@ -616,6 +619,109 @@ class GenerativeBenchmarkerConsole(GenerativeBenchmarkerOutput):
             headers,
             values,
             title="Request Token Statistics (Completed Requests)",
+        )
+
+    @staticmethod
+    def _add_speculative_metric_columns(
+        columns: ConsoleTableColumnsCollection,
+        summary: SpeculativeMetricSummary,
+        group: str,
+        units: str,
+        scale: float = 1.0,
+    ) -> None:
+        stats = summary.per_request.successful
+        for label, value in (
+            ("Pooled", summary.pooled.successful),
+            ("Mean", stats.mean if stats.count else None),
+            ("Mdn", stats.median if stats.count else None),
+            ("p95", stats.percentiles.p95 if stats.count else None),
+        ):
+            columns.add_value(
+                None if value is None else value * scale,
+                group=group,
+                name=units,
+                units=label,
+                precision=2,
+            )
+
+    def print_speculative_decoding_table(
+        self, report: GenerativeBenchmarksReport
+    ) -> None:
+        """
+        Print overall speculative decoding metrics for completed requests.
+
+        :param report: The benchmark report containing optional speculative summaries
+        """
+        columns = ConsoleTableColumnsCollection()
+        for benchmark in report.benchmarks:
+            summary = benchmark.metrics.speculative_decoding
+            if summary is None:
+                continue
+            columns.add_value(
+                str(benchmark.config.strategy),
+                group="Benchmark",
+                name="Strategy",
+                type_="text",
+            )
+            self._add_speculative_metric_columns(
+                columns, summary.acceptance_length, "Acceptance Length", "tok/step"
+            )
+            self._add_speculative_metric_columns(
+                columns, summary.acceptance_rate, "Draft Acceptance Rate", "%"
+            )
+        if not columns:
+            return
+        headers, values = columns.get_table_data()
+        self.console.print("\n")
+        self.console.print_table(
+            headers,
+            values,
+            title="Speculative Decoding Summary (Completed Requests)",
+        )
+
+    def print_speculative_positions_table(
+        self, report: GenerativeBenchmarksReport
+    ) -> None:
+        """
+        Print cumulative and conditional acceptance by draft position.
+
+        :param report: The benchmark report containing optional speculative summaries
+        """
+        columns = ConsoleTableColumnsCollection()
+        for benchmark in report.benchmarks:
+            summary = benchmark.metrics.speculative_decoding
+            if summary is None:
+                continue
+            for index, position in enumerate(sorted(summary.cumulative_acceptance)):
+                columns.add_value(
+                    str(benchmark.config.strategy) if index == 0 else "",
+                    group="Benchmark",
+                    name="Strategy",
+                    type_="text",
+                )
+                columns.add_value(position, group="Draft", name="Position", precision=0)
+                self._add_speculative_metric_columns(
+                    columns,
+                    summary.cumulative_acceptance[position],
+                    "Cumulative Acceptance",
+                    "%",
+                    scale=100.0,
+                )
+                self._add_speculative_metric_columns(
+                    columns,
+                    summary.conditional_acceptance[position],
+                    "Conditional Acceptance",
+                    "%",
+                    scale=100.0,
+                )
+        if not columns:
+            return
+        headers, values = columns.get_table_data()
+        self.console.print("\n")
+        self.console.print_table(
+            headers,
+            values,
+            title="Speculative Acceptance by Draft Position (Completed Requests)",
         )
 
     def print_request_latency_table(self, report: GenerativeBenchmarksReport):

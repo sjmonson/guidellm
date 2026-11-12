@@ -57,6 +57,13 @@ Each field contains:
 
 For example, requests with `(S_i, A_i, D_i)` values `(2, 2, 4)` and `(8, 0, 16)` have pooled acceptance length **1.2** and pooled acceptance rate **10%**. Their equally weighted per-request means are **1.5** and **25%**, respectively.
 
+The console displays two tables after request-token statistics when speculative decoding summaries are available:
+
+- **Speculative Decoding Summary (Completed Requests)**: One row per benchmark strategy, with pooled, per-request mean, median, and p95 values for acceptance length (tokens per verification step, including the bonus token) and draft acceptance rate (percent).
+- **Speculative Acceptance by Draft Position (Completed Requests)**: One row per draft position within each benchmark, with the same statistics for cumulative and conditional acceptance, both displayed as percentages. Positions are ordered numerically, and the strategy label appears on the first row of each benchmark block.
+
+Both tables use successful requests only and show two decimal places. Benchmarks without speculative summaries are omitted. Undefined ratios and empty per-request distributions display as `--`.
+
 The summary uses the same measurement-window request selection as request latency: requests overlapping the window contribute their full reported counters, without prorating steps at the boundaries. Missing inputs and inconsistent counters are excluded separately for each metric. Scalar ratios remain available without a histogram. Position metrics require a valid histogram whose counts sum to the reported steps and, when available, whose weighted sum matches accepted draft tokens. Shorter histograms contribute zero tails beyond their last position.
 
 A zero numerator with a positive denominator is a measured zero. A zero denominator is undefined: pooled values are `null`, and undefined per-request values are excluded from distributions. An empty distribution has count zero and follows the common distribution schema's zero-valued summary statistics. The whole summary is `null` when no supported counters are available. Server data remains in each request's typed `response_metrics`; Python callers can access interpreted values through `GenerativeRequestStats.speculative_decoding`.
