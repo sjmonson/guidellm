@@ -9,14 +9,13 @@ implementations.
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import Field
 
 from guidellm.schemas.base.base import StandardBaseModel
 from guidellm.schemas.base.info import RequestInfo
 from guidellm.schemas.base.request import GenerationRequest, UsageMetrics
 from guidellm.schemas.base.request_stats import GenerativeRequestStats
+from guidellm.schemas.base.response_metrics import VLLMRequestMetrics
 from guidellm.schemas.base.tool_call import ToolCall, ToolCallFunction
 
 __all__ = [
@@ -81,12 +80,11 @@ class GenerationResponse(StandardBaseModel):
         default_factory=UsageMetrics,
         description="Token usage statistics from the generated output.",
     )
-    response_metrics: dict[str, Any] | None = Field(
+    response_metrics: VLLMRequestMetrics | None = Field(
         default=None,
         description=(
-            "Per-request metrics the backend reported alongside usage, passed through "
-            "as received. vLLM populates this with its `metrics` object, which carries "
-            "server-side timings and speculative-decoding acceptance."
+            "Validated vLLM per-request metrics reported alongside usage, including "
+            "server-side timings and speculative decoding. Unknown fields are retained."
         ),
     )
 

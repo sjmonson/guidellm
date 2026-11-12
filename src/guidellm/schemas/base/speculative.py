@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Any
 
 from pydantic import computed_field
 
 from guidellm.schemas.base.base import StandardBaseModel
+from guidellm.schemas.base.response_metrics import VLLMRequestMetrics
 
 __all__ = ["SpeculativeDecodingMetrics"]
 
@@ -22,38 +22,31 @@ class SpeculativeDecodingMetrics(StandardBaseModel):
 
     @classmethod
     def from_response_metrics(
-        cls, metrics: dict[str, Any] | None
+        cls, metrics: VLLMRequestMetrics | None
     ) -> SpeculativeDecodingMetrics | None:
         """
-        Interpret supported vLLM counters without modifying the original payload.
+        Interpret validated vLLM counters without modifying the captured metrics.
 
-        Invalid fields are unavailable rather than coerced to zero. Histogram
+        Inconsistent counters are unavailable rather than coerced to zero. Histogram
         index j counts steps accepting exactly j draft tokens.
 
-        :param metrics: Raw response metrics dictionary
+        :param metrics: Validated server response metrics
         :return: Interpreted counters, or None when no supported data is available
         """
-        raw = metrics.get("speculative_decoding") if metrics else None
-        if not isinstance(raw, dict):
+        raw = metrics.speculative_decoding if metrics is not None else None
+        if raw is None:
             return None
-
-        def counter(name: str) -> int | None:
-            value = raw.get(name)
-            return value if type(value) is int and value >= 0 else None
-
-        steps = counter("num_spec_steps")
-        accepted = counter("num_accepted_draft_tokens")
-        drafted = counter("num_draft_tokens")
+        steps = raw.num_spec_steps
+        accepted = raw.num_accepted_draft_tokens
+        drafted = raw.num_draft_tokens
         if accepted is not None and (
             (drafted is not None and accepted > drafted)
             or (steps == 0 and accepted > 0)
         ):
             accepted = None
-        histogram = raw.get("acceptance_histogram")
+        histogram = raw.acceptance_histogram
         if not (
-            isinstance(histogram, list)
-            and histogram
-            and all(type(value) is int and value >= 0 for value in histogram)
+            histogram
             and steps is not None
             and sum(histogram) == steps
             and (

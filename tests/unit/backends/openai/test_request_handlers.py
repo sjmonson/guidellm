@@ -11,6 +11,7 @@ import json as stdlib_json
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from guidellm.backends.openai.request_handlers import (
     AudioRequestHandler,
@@ -36,6 +37,8 @@ from guidellm.schemas import (
     ToolCall,
     ToolCallFunction,
     UsageMetrics,
+    VLLMRequestMetrics,
+    VLLMSpeculativeDecodingMetrics,
 )
 from guidellm.schemas.data import GenerativeRequestFinalizerArgs
 from guidellm.settings import settings
@@ -411,10 +414,14 @@ class TestResponseMetricsPassthrough:
         request = GenerationRequest(request_id="spec", columns={"text_column": ["hi"]})
         args = GenerationRequestArguments()
         metrics = {
+            "queue_time_ms": 0.04,
+            "server_extension": {"value": 123},
             "speculative_decoding": {
                 **self.SPEC["speculative_decoding"],
                 "acceptance_histogram": [1, 0, 3],
-            }
+                "per_step_accepted": [0, 2, 2, 2],
+                "server_extension": "preserved",
+            },
         }
         if streaming:
             handler.add_streaming_line(
@@ -433,13 +440,38 @@ class TestResponseMetricsPassthrough:
                 timings=RequestTimings(resolve_start=1, resolve_end=2),
             ),
         )
-        assert stats.response_metrics == metrics
+        assert isinstance(handler.response_metrics, VLLMRequestMetrics)
+        assert response.response_metrics is handler.response_metrics
+        assert stats.response_metrics is response.response_metrics
+        assert isinstance(
+            stats.response_metrics.speculative_decoding, VLLMSpeculativeDecodingMetrics
+        )
+        assert stats.response_metrics.model_dump(exclude_unset=True) == metrics
         assert stats.speculative_decoding is not None
         assert stats.speculative_decoding.acceptance_length == 2.5
         assert stats.speculative_decoding.acceptance_rate == 50
         assert stats.speculative_decoding.cumulative_acceptance == {1: 0.75, 2: 0.75}
 
+    @pytest.mark.regression
+    def test_metrics_validated_during_extraction(self):
+        """Reject invalid known fields when parsing the backend response payload.
+
+        ## WRITTEN BY AI ##
+        """
+        handler = TextCompletionsRequestHandler()
+        with pytest.raises(ValidationError, match="num_spec_steps"):
+            handler.extract_choices_and_usage(
+                {
+                    "choices": [],
+                    "metrics": {"speculative_decoding": {"num_spec_steps": "invalid"}},
+                }
+            )
+
     def test_non_streaming(self) -> None:
+        """Parse metrics into the shared model for non-streamed completions.
+
+        ## WRITTEN BY AI ##
+        """
         handler = TextCompletionsRequestHandler()
         response = handler.compile_non_streaming(
             GenerationRequest(request_id="r1", columns={"text_column": ["hi"]}),
@@ -451,9 +483,14 @@ class TestResponseMetricsPassthrough:
                 "metrics": self.SPEC,
             },
         )
-        assert response.response_metrics == self.SPEC
+        assert isinstance(response.response_metrics, VLLMRequestMetrics)
+        assert response.response_metrics.model_dump(exclude_unset=True) == self.SPEC
 
     def test_streaming(self) -> None:
+        """Parse metrics from the final usage chunk of a streamed completion.
+
+        ## WRITTEN BY AI ##
+        """
         handler = TextCompletionsRequestHandler()
         handler.add_streaming_line('data: {"id": "c1", "choices": [{"text": "hello"}]}')
         # vLLM attaches the metrics to the closing usage event, not to a text delta.
@@ -465,7 +502,8 @@ class TestResponseMetricsPassthrough:
             GenerationRequest(request_id="r1", columns={"text_column": ["hi"]}),
             GenerationRequestArguments(),
         )
-        assert response.response_metrics == self.SPEC
+        assert isinstance(response.response_metrics, VLLMRequestMetrics)
+        assert response.response_metrics.model_dump(exclude_unset=True) == self.SPEC
 
     def test_absent_when_the_backend_reports_none(self) -> None:
         handler = TextCompletionsRequestHandler()

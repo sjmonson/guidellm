@@ -28,6 +28,7 @@ from guidellm.schemas import (
     RequestTimings,
     StatusDistributionSummary,
     UsageMetrics,
+    VLLMRequestMetrics,
 )
 from guidellm.schemas.benchmark import GoodputSLO
 
@@ -41,14 +42,16 @@ def _speculative_stats(
 ) -> GenerativeRequestStats:
     """Build a request carrying raw vLLM acceptance counters."""
     stats = _make_scheduled_stats(request_id, 11, 11, 12)
-    stats.response_metrics = {
-        "speculative_decoding": {
-            "num_spec_steps": steps,
-            "num_accepted_draft_tokens": accepted,
-            "num_draft_tokens": drafted,
-            "acceptance_histogram": histogram,
+    stats.response_metrics = VLLMRequestMetrics.model_validate(
+        {
+            "speculative_decoding": {
+                "num_spec_steps": steps,
+                "num_accepted_draft_tokens": accepted,
+                "num_draft_tokens": drafted,
+                "acceptance_histogram": histogram,
+            }
         }
-    }
+    )
     return stats
 
 
@@ -108,9 +111,7 @@ def test_speculative_metric_specific_populations():
     valid = _speculative_stats("valid", 2, 2, 4, [1, 0, 1, 0])
     no_histogram = _speculative_stats("no-histogram", 100, 100, 100, None)
     no_accepted = _speculative_stats("no-accepted", 1000, 0, 1000, None)
-    del no_accepted.response_metrics["speculative_decoding"][
-        "num_accepted_draft_tokens"
-    ]
+    no_accepted.response_metrics.speculative_decoding.num_accepted_draft_tokens = None
     zero = _speculative_stats("zero", 0, 0, 0, [0, 0, 0, 0])
     missing = _make_scheduled_stats("missing", 11, 11, 12)
     summary = SpeculativeDecodingSummary.compile(

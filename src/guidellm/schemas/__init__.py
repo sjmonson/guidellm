@@ -40,6 +40,8 @@ from guidellm.schemas.base import (
     TotalT,
     TurnType,
     UsageMetrics,
+    VLLMRequestMetrics,
+    VLLMSpeculativeDecodingMetrics,
     standard_model_config,
 )
 
@@ -74,5 +76,7 @@ __all__ = [
     "TotalT",
     "TurnType",
     "UsageMetrics",
+    "VLLMRequestMetrics",
+    "VLLMSpeculativeDecodingMetrics",
     "standard_model_config",
 ]

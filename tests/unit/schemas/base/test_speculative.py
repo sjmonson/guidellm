@@ -6,7 +6,14 @@ from typing import Any
 
 import pytest
 
-from guidellm.schemas import SpeculativeDecodingMetrics
+from guidellm.schemas import SpeculativeDecodingMetrics, VLLMRequestMetrics
+
+
+def _interpret(metrics: dict[str, Any] | None) -> SpeculativeDecodingMetrics | None:
+    """Interpret an already validated response payload."""
+    return SpeculativeDecodingMetrics.from_response_metrics(
+        VLLMRequestMetrics.model_validate(metrics) if metrics is not None else None
+    )
 
 
 @pytest.mark.smoke
@@ -23,9 +30,7 @@ def test_vllm_histogram_and_derived_values():
         "mean_acceptance_length": 999,
         "draft_acceptance_rate": 999,
     }
-    metrics = SpeculativeDecodingMetrics.from_response_metrics(
-        {"speculative_decoding": raw}
-    )
+    metrics = _interpret({"speculative_decoding": raw})
     assert metrics is not None
     assert metrics.acceptance_length == pytest.approx(1 + 10 / 43)
     assert metrics.acceptance_rate == pytest.approx(1000 / 129)
@@ -51,42 +56,17 @@ def test_missing_payload(raw):
 
     ## WRITTEN BY AI ##
     """
-    assert SpeculativeDecodingMetrics.from_response_metrics(raw) is None
+    assert _interpret(raw) is None
 
 
 @pytest.mark.regression
-@pytest.mark.parametrize("bad", [True, -1, 1.5, "2", float("nan"), float("inf"), []])
-def test_invalid_counters_do_not_coerce(bad: Any):
-    """Malformed counters are unavailable while independent valid fields survive.
-
-    ## WRITTEN BY AI ##
-    """
-    metrics = SpeculativeDecodingMetrics.from_response_metrics(
-        {
-            "speculative_decoding": {
-                "num_spec_steps": bad,
-                "num_accepted_draft_tokens": 0,
-                "num_draft_tokens": 4,
-                "acceptance_histogram": [2, 0],
-            }
-        }
-    )
-    assert metrics is not None
-    assert metrics.acceptance_length is None
-    assert metrics.acceptance_rate == 0
-    assert metrics.acceptance_tails is None
-
-
-@pytest.mark.regression
-@pytest.mark.parametrize(
-    "histogram", [[], [1, 0], [0, 2], [2, -1, 1], [True, 1], "bad"]
-)
+@pytest.mark.parametrize("histogram", [[], [1, 0], [0, 2]])
 def test_invalid_histogram_preserves_scalar_metrics(histogram):
     """Reject malformed or inconsistent histograms without losing scalar ratios.
 
     ## WRITTEN BY AI ##
     """
-    metrics = SpeculativeDecodingMetrics.from_response_metrics(
+    metrics = _interpret(
         {
             "speculative_decoding": {
                 "num_spec_steps": 2,
@@ -109,7 +89,7 @@ def test_zero_denominators_and_unreachable_positions(steps):
 
     ## WRITTEN BY AI ##
     """
-    metrics = SpeculativeDecodingMetrics.from_response_metrics(
+    metrics = _interpret(
         {
             "speculative_decoding": {
                 "num_spec_steps": steps,
@@ -136,7 +116,7 @@ def test_inconsistent_accepted_counter(steps, drafted):
 
     ## WRITTEN BY AI ##
     """
-    metrics = SpeculativeDecodingMetrics.from_response_metrics(
+    metrics = _interpret(
         {
             "speculative_decoding": {
                 "num_spec_steps": steps,
