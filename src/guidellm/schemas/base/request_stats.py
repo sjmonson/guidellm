@@ -18,6 +18,7 @@ import guidellm.extras.numpy as np
 from guidellm.schemas.base.base import StandardBaseDict
 from guidellm.schemas.base.info import RequestInfo
 from guidellm.schemas.base.request import UsageMetrics
+from guidellm.schemas.base.speculative import SpeculativeDecodingMetrics
 from guidellm.schemas.base.tool_call import ToolCall
 
 __all__ = ["GenerativeRequestStats"]
@@ -77,6 +78,11 @@ class GenerativeRequestStats(StandardBaseDict):
     output_metrics: UsageMetrics = Field(
         description="Token usage statistics for the generated output"
     )
+
+    @property
+    def speculative_decoding(self) -> SpeculativeDecodingMetrics | None:
+        """:return: Interpreted vLLM speculative counters, or None if unavailable."""
+        return SpeculativeDecodingMetrics.from_response_metrics(self.response_metrics)
 
     # Request stats
     @computed_field  # type: ignore[misc]

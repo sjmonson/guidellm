@@ -30,6 +30,7 @@ from .request import (
 )
 from .request_stats import GenerativeRequestStats
 from .response import GenerationResponse
+from .speculative import SpeculativeDecodingMetrics
 from .statistics import (
     ConfidenceInterval,
     DistributionSummary,
@@ -61,6 +62,7 @@ __all__ = [
     "RequestSettings",
     "RequestTimings",
     "SampleUncertainty",
+    "SpeculativeDecodingMetrics",
     "StandardBaseDict",
     "StandardBaseModel",
     "StatusBreakdown",

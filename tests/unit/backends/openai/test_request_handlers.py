@@ -32,6 +32,7 @@ from guidellm.schemas import (
     GenerationRequestArguments,
     GenerationResponse,
     RequestInfo,
+    RequestTimings,
     ToolCall,
     ToolCallFunction,
     UsageMetrics,
@@ -395,6 +396,48 @@ class TestResponseMetricsPassthrough:
             "num_draft_tokens": 12,
         }
     }
+
+    @pytest.mark.regression
+    @pytest.mark.parametrize("streaming", [True, False])
+    @pytest.mark.parametrize(
+        "handler_type", [TextCompletionsRequestHandler, ChatCompletionsRequestHandler]
+    )
+    def test_derived_metrics_survive_stats_compilation(self, streaming, handler_type):
+        """Final streamed and non-streamed vLLM counters feed shared calculations.
+
+        ## WRITTEN BY AI ##
+        """
+        handler = handler_type()
+        request = GenerationRequest(request_id="spec", columns={"text_column": ["hi"]})
+        args = GenerationRequestArguments()
+        metrics = {
+            "speculative_decoding": {
+                **self.SPEC["speculative_decoding"],
+                "acceptance_histogram": [1, 0, 3],
+            }
+        }
+        if streaming:
+            handler.add_streaming_line(
+                "data: " + json.dumps({"choices": [], "usage": {}, "metrics": metrics})
+            )
+            response = handler.compile_streaming(request, args)
+        else:
+            response = handler.compile_non_streaming(
+                request, args, {"choices": [], "usage": {}, "metrics": metrics}
+            )
+        stats = response.compile_stats(
+            request,
+            RequestInfo(
+                request_id="spec",
+                status="completed",
+                timings=RequestTimings(resolve_start=1, resolve_end=2),
+            ),
+        )
+        assert stats.response_metrics == metrics
+        assert stats.speculative_decoding is not None
+        assert stats.speculative_decoding.acceptance_length == 2.5
+        assert stats.speculative_decoding.acceptance_rate == 50
+        assert stats.speculative_decoding.cumulative_acceptance == {1: 0.75, 2: 0.75}
 
     def test_non_streaming(self) -> None:
         handler = TextCompletionsRequestHandler()
