@@ -82,7 +82,11 @@ class GenerativeRequestStats(StandardBaseDict):
     @property
     def speculative_decoding(self) -> SpeculativeDecodingMetrics | None:
         """:return: Interpreted vLLM speculative counters, or None if unavailable."""
-        return SpeculativeDecodingMetrics.from_response_metrics(self.response_metrics)
+        return SpeculativeDecodingMetrics.from_response_metrics(
+            self.response_metrics,
+            reasoning_tokens=self.output_metrics.reasoning_tokens,
+            output_tokens=self.output_metrics.text_tokens,
+        )
 
     # Request stats
     @computed_field  # type: ignore[misc]

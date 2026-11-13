@@ -68,7 +68,9 @@ def test_captured_metrics_round_trip(level):
     assert stats.response_metrics is metrics
     restored = GenerativeRequestStats.model_validate_json(stats.model_dump_json())
     assert isinstance(restored.response_metrics, VLLMRequestMetrics)
-    assert restored.response_metrics.model_dump(exclude_unset=True) == raw
+    # Default serialization includes optional fields as null; reloading marks them
+    # as supplied. Compare typed values rather than the original fields-set.
+    assert restored.response_metrics == metrics
     derived = restored.speculative_decoding
     assert derived is not None
     assert derived.acceptance_length == pytest.approx(109 / 79)
@@ -117,7 +119,13 @@ def test_timing_only_and_legacy_dictionary_inputs():
 
 @pytest.mark.regression
 @pytest.mark.parametrize(
-    "field", ["num_spec_steps", "num_accepted_draft_tokens", "num_draft_tokens"]
+    "field",
+    [
+        "num_spec_steps",
+        "num_accepted_draft_tokens",
+        "num_draft_tokens",
+        "num_spec_tokens",
+    ],
 )
 @pytest.mark.parametrize("bad", [True, -1, 1.5, "2", float("nan"), float("inf"), []])
 def test_invalid_counters_rejected_by_schema(field, bad):
@@ -131,12 +139,13 @@ def test_invalid_counters_rejected_by_schema(field, bad):
 
 @pytest.mark.regression
 @pytest.mark.parametrize("bad", [[2, -1, 1], [True, 1], "bad"])
-def test_invalid_histogram_rejected_by_schema(bad):
-    """Validate histogram shape and counter types before derived calculations.
+@pytest.mark.parametrize(
+    "field", ["acceptance_histogram", "per_step_accepted", "per_step_drafted"]
+)
+def test_invalid_histogram_rejected_by_schema(bad, field):
+    """Validate histogram and detailed array counter types before calculations.
 
     ## WRITTEN BY AI ##
     """
-    with pytest.raises(ValidationError, match="acceptance_histogram"):
-        VLLMRequestMetrics.model_validate(
-            {"speculative_decoding": {"acceptance_histogram": bad}}
-        )
+    with pytest.raises(ValidationError, match=field):
+        VLLMRequestMetrics.model_validate({"speculative_decoding": {field: bad}})

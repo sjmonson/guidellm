@@ -14,7 +14,7 @@ _Counter = Annotated[int, Field(strict=True, ge=0)]
 
 
 class VLLMSpeculativeDecodingMetrics(StandardBaseDict):
-    """vLLM speculative summary fields, retaining detailed arrays and future extras."""
+    """vLLM speculative summary and detailed fields, retaining future extras."""
 
     mean_acceptance_length: float | None = Field(
         default=None, description="Server-reported tokens per step including the bonus"
@@ -34,6 +34,15 @@ class VLLMSpeculativeDecodingMetrics(StandardBaseDict):
     acceptance_histogram: list[_Counter] | None = Field(
         default=None,
         description="Index j counts steps accepting exactly j draft tokens",
+    )
+    num_spec_tokens: _Counter | None = Field(
+        default=None, description="Configured maximum draft length per step"
+    )
+    per_step_accepted: list[_Counter] | None = Field(
+        default=None, description="Ordered accepted draft counts per verification step"
+    )
+    per_step_drafted: list[_Counter] | None = Field(
+        default=None, description="Ordered proposed draft counts per verification step"
     )
 
 

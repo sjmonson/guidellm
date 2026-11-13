@@ -24,7 +24,7 @@ from guidellm.schemas import (
     DistributionSummary,
     GenerativeRequestStats,
     SampleUncertainty,
-    SpeculativeDecodingMetrics,
+    SpeculativeAcceptanceMetrics,
     StandardBaseDict,
     StandardBaseModel,
     StatusBreakdown,
@@ -43,6 +43,7 @@ __all__ = [
     "GenerativeVideoMetricsSummary",
     "SLOAttainmentSummary",
     "SchedulerMetrics",
+    "SpeculativeAcceptanceSummary",
     "SpeculativeDecodingSummary",
     "SpeculativeMetricSummary",
     "StatusTypes",
@@ -1054,8 +1055,8 @@ class SpeculativeMetricSummary(StandardBaseModel):
     @classmethod
     def compile(
         cls,
-        groups: list[list[SpeculativeDecodingMetrics]],
-        counts: Callable[[SpeculativeDecodingMetrics], tuple[int, int] | None],
+        groups: list[list[SpeculativeAcceptanceMetrics]],
+        counts: Callable[[SpeculativeAcceptanceMetrics], tuple[int, int] | None],
     ) -> SpeculativeMetricSummary:
         """
         Compile ratios using matched numerators and denominators.
@@ -1094,8 +1095,8 @@ class SpeculativeMetricSummary(StandardBaseModel):
         )
 
 
-class SpeculativeDecodingSummary(StandardBaseModel):
-    """Optional vLLM speculative decoding metrics for the measured requests."""
+class SpeculativeAcceptanceSummary(StandardBaseModel):
+    """Shared overall or phase-specific acceptance aggregations."""
 
     acceptance_length: SpeculativeMetricSummary
     acceptance_rate: SpeculativeMetricSummary = Field(
@@ -1109,28 +1110,16 @@ class SpeculativeDecodingSummary(StandardBaseModel):
     )
 
     @classmethod
-    def compile(
+    def from_counters(
         cls,
-        successful: list[GenerativeRequestStats],
-        incomplete: list[GenerativeRequestStats],
-        errored: list[GenerativeRequestStats],
-    ) -> SpeculativeDecodingSummary | None:
+        groups: list[list[SpeculativeAcceptanceMetrics]],
+    ) -> SpeculativeAcceptanceSummary | None:
         """
         Compile supported request counters, computing histogram tails once.
 
-        :param successful: Successful requests within the measurement window
-        :param incomplete: Incomplete requests within the measurement window
-        :param errored: Errored requests within the measurement window
+        :param groups: Successful, incomplete, and errored request counters
         :return: Summary, or None when no supported counters were reported
         """
-        groups = [
-            [
-                metrics
-                for req in group
-                if (metrics := req.speculative_decoding) is not None
-            ]
-            for group in (successful, incomplete, errored)
-        ]
         if not any(groups):
             return None
         max_position = max(
@@ -1138,7 +1127,7 @@ class SpeculativeDecodingSummary(StandardBaseModel):
             default=0,
         )
 
-        def length_counts(item: SpeculativeDecodingMetrics) -> tuple[int, int] | None:
+        def length_counts(item: SpeculativeAcceptanceMetrics) -> tuple[int, int] | None:
             if item.num_accepted_draft_tokens is None or item.num_spec_steps is None:
                 return None
             return (
@@ -1146,7 +1135,7 @@ class SpeculativeDecodingSummary(StandardBaseModel):
                 item.num_spec_steps,
             )
 
-        def rate_counts(item: SpeculativeDecodingMetrics) -> tuple[int, int] | None:
+        def rate_counts(item: SpeculativeAcceptanceMetrics) -> tuple[int, int] | None:
             if item.num_accepted_draft_tokens is None or item.num_draft_tokens is None:
                 return None
             return 100 * item.num_accepted_draft_tokens, item.num_draft_tokens
@@ -1156,7 +1145,7 @@ class SpeculativeDecodingSummary(StandardBaseModel):
             for position in range(1, max_position + 1):
 
                 def counts(
-                    item: SpeculativeDecodingMetrics, position: int = position
+                    item: SpeculativeAcceptanceMetrics, position: int = position
                 ) -> tuple[int, int] | None:
                     if item.acceptance_tails is None:
                         return None
@@ -1170,6 +1159,57 @@ class SpeculativeDecodingSummary(StandardBaseModel):
             acceptance_rate=SpeculativeMetricSummary.compile(groups, rate_counts),
             cumulative_acceptance=positions(False),
             conditional_acceptance=positions(True),
+        )
+
+
+class SpeculativeDecodingSummary(SpeculativeAcceptanceSummary):
+    """Overall vLLM acceptance with optional reconstructed phase summaries."""
+
+    reasoning: SpeculativeAcceptanceSummary | None = Field(
+        default=None, description="Acceptance for steps attributed to reasoning"
+    )
+    content: SpeculativeAcceptanceSummary | None = Field(
+        default=None, description="Acceptance for steps attributed to content"
+    )
+
+    @classmethod
+    def compile(
+        cls,
+        successful: list[GenerativeRequestStats],
+        incomplete: list[GenerativeRequestStats],
+        errored: list[GenerativeRequestStats],
+    ) -> SpeculativeDecodingSummary | None:
+        """
+        Interpret each request once and aggregate overall and phase counters.
+
+        :param successful: Successful requests within the measurement window
+        :param incomplete: Incomplete requests within the measurement window
+        :param errored: Errored requests within the measurement window
+        :return: Summary, or None when no supported counters were reported
+        """
+        overall: list[list[SpeculativeAcceptanceMetrics]] = [[], [], []]
+        reasoning: list[list[SpeculativeAcceptanceMetrics]] = [[], [], []]
+        content: list[list[SpeculativeAcceptanceMetrics]] = [[], [], []]
+        for index, requests in enumerate((successful, incomplete, errored)):
+            for request in requests:
+                if (metrics := request.speculative_decoding) is None:
+                    continue
+                overall[index].append(metrics)
+                if metrics.reasoning is not None:
+                    reasoning[index].append(metrics.reasoning)
+                if metrics.content is not None:
+                    content[index].append(metrics.content)
+
+        summary = SpeculativeAcceptanceSummary.from_counters(overall)
+        if summary is None:
+            return None
+        return cls(
+            acceptance_length=summary.acceptance_length,
+            acceptance_rate=summary.acceptance_rate,
+            cumulative_acceptance=summary.cumulative_acceptance,
+            conditional_acceptance=summary.conditional_acceptance,
+            reasoning=SpeculativeAcceptanceSummary.from_counters(reasoning),
+            content=SpeculativeAcceptanceSummary.from_counters(content),
         )
 
 

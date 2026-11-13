@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import json as stdlib_json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,6 +33,7 @@ from guidellm.schemas import (
     GenerationRequest,
     GenerationRequestArguments,
     GenerationResponse,
+    GenerativeRequestStats,
     RequestInfo,
     RequestTimings,
     ToolCall,
@@ -399,6 +401,118 @@ class TestResponseMetricsPassthrough:
             "num_draft_tokens": 12,
         }
     }
+
+    @pytest.mark.regression
+    @pytest.mark.parametrize("streaming", [True, False])
+    @pytest.mark.parametrize("level", ["summary", "detailed", "detailed_reasoning"])
+    def test_server_fixtures_phase_metrics(self, streaming, level):
+        """Real server payloads preserve usage and all phase ratios through replay.
+
+        ## WRITTEN BY AI ##
+        """
+        payload = json.loads(
+            (
+                Path(__file__).parents[2]
+                / "benchmark"
+                / "schemas"
+                / "fixtures"
+                / f"vllm_spec_{level}.json"
+            ).read_text()
+        )
+        handler = ChatCompletionsRequestHandler()
+        request = GenerationRequest(request_id="spec")
+        args = GenerationRequestArguments()
+        if streaming:
+            handler.add_streaming_line("data: " + json.dumps(payload))
+            response = handler.compile_streaming(request, args)
+        else:
+            response = handler.compile_non_streaming(request, args, payload)
+        usage = payload["usage"]
+        assert (
+            response.output_metrics.reasoning_tokens
+            == (usage["completion_tokens_details"]["reasoning_tokens"])
+        )
+        assert response.output_metrics.total_tokens == usage["completion_tokens"]
+        stats = response.compile_stats(
+            request,
+            RequestInfo(
+                request_id="spec",
+                status="completed",
+                timings=RequestTimings(resolve_start=1, resolve_end=2),
+            ),
+        )
+        restored = GenerativeRequestStats.model_validate_json(stats.model_dump_json())
+        metrics = restored.speculative_decoding
+        assert metrics == stats.speculative_decoding
+        assert (
+            stats.response_metrics.model_dump(exclude_unset=True) == payload["metrics"]
+        )
+        assert restored.response_metrics == stats.response_metrics
+        if level == "summary":
+            assert metrics.reasoning is None
+            assert metrics.content is None
+            return
+        reasoning, content = metrics.reasoning, metrics.content
+        if level == "detailed":
+            assert reasoning.num_spec_steps == 0
+            assert reasoning.acceptance_rate is None
+            assert content.num_spec_steps == 79
+            assert content.acceptance_length == metrics.acceptance_length
+            assert content.acceptance_rate == metrics.acceptance_rate
+            assert content.cumulative_acceptance == metrics.cumulative_acceptance
+            assert content.conditional_acceptance == metrics.conditional_acceptance
+        else:
+            # Reconstructed step 102 starts at offset 158 and crosses the boundary
+            # at 160; step 103 starts at 162 and belongs to content.
+            assert reasoning.num_spec_steps == 102
+            assert reasoning.num_accepted_draft_tokens == 59
+            assert reasoning.num_draft_tokens == 306
+            assert reasoning.acceptance_histogram == [64, 23, 9, 6]
+            assert reasoning.acceptance_length == pytest.approx(161 / 102)
+            assert reasoning.acceptance_rate == pytest.approx(100 * 59 / 306)
+            assert reasoning.cumulative_acceptance == pytest.approx(
+                {1: 38 / 102, 2: 15 / 102, 3: 6 / 102}
+            )
+            assert reasoning.conditional_acceptance == pytest.approx(
+                {1: 38 / 102, 2: 15 / 38, 3: 6 / 15}
+            )
+            assert content.num_spec_steps == 14
+            assert content.num_accepted_draft_tokens == 21
+            assert content.num_draft_tokens == 42
+            assert content.acceptance_histogram == [3, 5, 2, 4]
+            assert content.acceptance_length == 2.5
+            assert content.acceptance_rate == 50
+            assert content.cumulative_acceptance == pytest.approx(
+                {1: 11 / 14, 2: 6 / 14, 3: 4 / 14}
+            )
+            assert content.conditional_acceptance == pytest.approx(
+                {1: 11 / 14, 2: 6 / 11, 3: 4 / 6}
+            )
+
+    @pytest.mark.regression
+    @pytest.mark.parametrize("reasoning", [None, 0, 5])
+    @pytest.mark.parametrize(
+        "handler_type",
+        [
+            TextCompletionsRequestHandler,
+            ChatCompletionsRequestHandler,
+            ResponsesRequestHandler,
+        ],
+    )
+    def test_reasoning_usage_subset(self, reasoning, handler_type):
+        """Keep missing and zero reasoning distinct and avoid double-counting usage.
+
+        ## WRITTEN BY AI ##
+        """
+        details = {} if reasoning is None else {"reasoning_tokens": reasoning}
+        usage = (
+            {"output_tokens": 10, "output_tokens_details": details}
+            if handler_type is ResponsesRequestHandler
+            else {"completion_tokens": 10, "completion_tokens_details": details}
+        )
+        _, output = handler_type().extract_metrics(usage, "text")
+        assert output.reasoning_tokens == reasoning
+        assert output.text_tokens == output.total_tokens == 10
 
     @pytest.mark.regression
     @pytest.mark.parametrize("streaming", [True, False])

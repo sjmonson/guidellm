@@ -151,6 +151,87 @@ def test_speculative_window_and_result_round_trip():
     assert GenerativeMetrics.model_validate(legacy).speculative_decoding is None
 
 
+def _phase_stats(request_id, accepted, drafted, reasoning, output):
+    """Build request counters with a reconstructed reasoning prefix."""
+    width = max(drafted, default=0)
+    stats = _speculative_stats(
+        request_id,
+        len(accepted),
+        sum(accepted),
+        sum(drafted),
+        [accepted.count(j) for j in range(width + 1)],
+    )
+    stats.output_metrics = UsageMetrics(text_tokens=output, reasoning_tokens=reasoning)
+    raw = stats.response_metrics.speculative_decoding
+    raw.per_step_accepted = accepted
+    raw.per_step_drafted = drafted
+    raw.num_spec_tokens = width
+    return stats
+
+
+@pytest.mark.regression
+def test_phase_pooling_statuses_and_missing_populations():
+    """Pool only matching phase counters and weight per-request ratios equally.
+
+    ## WRITTEN BY AI ##
+    """
+    # Reasoning: a=(S=1,A=2,D=2), b=(S=3,A=0,D=6).
+    # Content: a=(S=1,A=0,D=2), c=(S=1,A=1,D=1).
+    a = _phase_stats("a", [2, 0], [2, 2], 4, 5)
+    b = _phase_stats("b", [0, 0, 0], [2, 2, 2], 4, 4)
+    c = _phase_stats("c", [1], [1], 0, 3)
+    missing = _speculative_stats("summary", 100, 100, 100, [0, 100])
+    unknown = _phase_stats("unknown", [1], [1], None, 3)
+    summary = SpeculativeDecodingSummary.compile([a, missing, unknown], [b], [c])
+    reasoning, content = summary.reasoning, summary.content
+    assert reasoning.acceptance_length.pooled.total == 1.5
+    assert reasoning.acceptance_length.per_request.total.mean == 2
+    assert reasoning.acceptance_rate.pooled.total == 25
+    assert reasoning.acceptance_rate.per_request.total.mean == 50
+    assert reasoning.acceptance_rate.per_request.total.count == 2
+    assert reasoning.acceptance_rate.pooled.successful == 100
+    assert reasoning.acceptance_rate.pooled.incomplete == 0
+    assert reasoning.acceptance_rate.pooled.errored is None
+    assert reasoning.acceptance_rate.per_request.errored.count == 0
+    assert reasoning.cumulative_acceptance[2].pooled.total == 0.25
+    assert reasoning.cumulative_acceptance[2].per_request.total.mean == 0.5
+    assert reasoning.conditional_acceptance[2].pooled.total == 1
+    assert reasoning.conditional_acceptance[2].per_request.total.count == 1
+    assert content.acceptance_length.pooled.total == 1.5
+    assert content.acceptance_rate.pooled.total == pytest.approx(100 / 3)
+    assert content.acceptance_rate.per_request.total.mean == 50
+    assert content.acceptance_rate.per_request.total.count == 2
+    assert content.acceptance_rate.pooled.successful == 0
+    assert content.acceptance_rate.pooled.incomplete is None
+    assert content.acceptance_rate.pooled.errored == 100
+    assert content.cumulative_acceptance[2].pooled.total == 0
+    assert content.conditional_acceptance[2].pooled.total == 0
+
+
+@pytest.mark.regression
+def test_phase_window_and_legacy_round_trip():
+    """Persist phase summaries with the existing window and legacy loading contracts.
+
+    ## WRITTEN BY AI ##
+    """
+    included = _phase_stats("included", [2, 0], [2, 2], 4, 5)
+    included.info.timings.request_start = 9
+    outside = _phase_stats("outside", [0], [100], 3, 3)
+    outside.info.timings.request_start = 30
+    outside.info.timings.request_end = outside.info.timings.resolve_end = 31
+    metrics = GenerativeMetrics.compile(_make_accumulator([included, outside], 10, 20))
+    summary = metrics.speculative_decoding
+    assert summary.reasoning.acceptance_rate.pooled.total == 100
+    assert summary.content.acceptance_rate.pooled.total == 0
+    restored = GenerativeMetrics.model_validate_json(metrics.model_dump_json())
+    assert restored.speculative_decoding == summary
+    legacy = summary.model_dump(exclude={"reasoning", "content"})
+    restored_summary = SpeculativeDecodingSummary.model_validate(legacy)
+    assert restored_summary.reasoning is None
+    assert restored_summary.content is None
+    assert restored_summary.acceptance_rate == summary.acceptance_rate
+
+
 def _make_errored_tool_call_stats(request_id: str) -> GenerativeRequestStats:
     """Build a GenerativeRequestStats representing an errored tool-call request.
 

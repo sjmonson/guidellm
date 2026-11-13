@@ -837,6 +837,7 @@ class TextCompletionsRequestHandler(OpenAIRequestHandler):
                 or usage_metrics.get("completion_tokens")
                 or 0
             ),
+            reasoning_tokens=output_details.get("reasoning_tokens"),
             text_words=text_words,
             text_characters=text_chars,
             image_tokens=output_details.get("image_tokens"),
@@ -2389,6 +2390,7 @@ class ResponsesRequestHandler(OpenAIRequestHandler):
                 or usage_metrics.get("output_tokens")
                 or 0
             ),
+            reasoning_tokens=output_details.get("reasoning_tokens"),
             text_words=text_words,
             text_characters=text_chars,
             image_tokens=output_details.get("image_tokens"),
