@@ -40,6 +40,25 @@ def _benchmark(summary: SpeculativeDecodingSummary | None, streams: int = 10):
     return benchmark
 
 
+def _phase_request(accepted: list[int], reasoning_tokens: int):
+    """Build detailed counters with two drafts per step and reported phase usage."""
+    request = _request(
+        len(accepted),
+        sum(accepted),
+        2 * len(accepted),
+        [accepted.count(position) for position in range(3)],
+    )
+    assert request.response_metrics is not None
+    counters = request.response_metrics.speculative_decoding
+    assert counters is not None
+    counters.num_spec_tokens = 2
+    counters.per_step_accepted = accepted
+    counters.per_step_drafted = [2] * len(accepted)
+    request.output_metrics.text_tokens = 1 + len(accepted) + sum(accepted)
+    request.output_metrics.reasoning_tokens = reasoning_tokens
+    return request
+
+
 @pytest.mark.regression
 @pytest.mark.asyncio
 async def test_finalize_prints_summary_with_pooled_and_per_request_statistics(mocker):
@@ -72,6 +91,7 @@ async def test_finalize_prints_summary_with_pooled_and_per_request_statistics(mo
     headers, values = tables["Speculative Decoding Summary (Completed Requests)"]
     assert headers == [
         ["Benchmark", "Strategy", ""],
+        ["Benchmark", "Phase", ""],
         *[
             ["Acceptance Length", "tok/step", stat]
             for stat in ("Pooled", "Mean", "Mdn", "p95")
@@ -83,6 +103,7 @@ async def test_finalize_prints_summary_with_pooled_and_per_request_statistics(mo
     ]
     assert values == [
         [str(measured.config.strategy), str(other.config.strategy)],
+        ["Overall", "Overall"],
         *[
             [value, value]
             for value in (
@@ -131,6 +152,7 @@ def test_position_table_orders_positions_and_groups_benchmarks(mocker):
     headers, values = table.call_args.args
     assert headers == [
         ["Benchmark", "Strategy", ""],
+        ["Benchmark", "Phase", ""],
         ["Draft", "Position", ""],
         *[
             ["Cumulative Acceptance", "%", stat]
@@ -143,6 +165,7 @@ def test_position_table_orders_positions_and_groups_benchmarks(mocker):
     ]
     assert values == [
         [str(measured.config.strategy), "", str(other.config.strategy), ""],
+        ["Overall", "", "Overall", ""],
         ["1", "2", "1", "2"],
         ["10.00"] * 4,
         ["25.00"] * 4,
@@ -154,6 +177,115 @@ def test_position_table_orders_positions_and_groups_benchmarks(mocker):
         ["50.00", "100.00"] * 2,
     ]
     assert summary.model_dump() == original
+
+
+@pytest.mark.regression
+def test_phase_tables_show_completed_statistics_and_group_mixed_benchmarks(mocker):
+    """Render all four phase metrics and preserve overall-only benchmark alignment.
+
+    ## WRITTEN BY AI ##
+    """
+    outlier = _phase_request([2, 2, 2], 4)
+    summary = SpeculativeDecodingSummary.compile(
+        [_phase_request([2, 0, 1], 4), _phase_request([0, 0, 0], 2)],
+        [outlier],
+        [outlier],
+    )
+    assert summary is not None
+    for phase in (summary, summary.reasoning, summary.content):
+        assert phase is not None
+        phase.cumulative_acceptance = dict(
+            reversed(list(phase.cumulative_acceptance.items()))
+        )
+    original = summary.model_dump()
+    measured = _benchmark(summary)
+    legacy = _benchmark(
+        SpeculativeDecodingSummary.compile([_request(1, 0, 2, [1, 0, 0])], [], []),
+        streams=20,
+    )
+    output = GenerativeBenchmarkerConsole()
+    mocker.patch.object(output.console, "print")
+    table = mocker.patch.object(output.console, "print_table")
+    results = report(measured, _benchmark(None), legacy)
+
+    output.print_speculative_decoding_table(results)
+    output.print_speculative_positions_table(results)
+
+    overall = table.call_args_list[0].args[1]
+    assert overall == [
+        [str(measured.config.strategy), "", "", str(legacy.config.strategy)],
+        ["Overall", "Reasoning", "Output", "Overall"],
+        ["1.50", "2.00", "1.25", "1.00"],
+        ["1.50", "2.00", "1.25", "1.00"],
+        ["1.00", "1.00", "1.00", "1.00"],
+        ["2.00", "3.00", "1.50", "1.00"],
+        ["25.00", "50.00", "12.50", "0.00"],
+        ["25.00", "50.00", "12.50", "0.00"],
+        ["0.00", "0.00", "0.00", "0.00"],
+        ["50.00", "100.00", "25.00", "0.00"],
+    ]
+    positions = table.call_args_list[1].args[1]
+    assert positions == [
+        [
+            str(measured.config.strategy),
+            "",
+            "",
+            "",
+            "",
+            "",
+            str(legacy.config.strategy),
+            "",
+        ],
+        ["Overall", "", "Reasoning", "", "Output", "", "Overall", ""],
+        ["1", "2"] * 4,
+        ["33.33", "16.67", "50.00", "50.00", "25.00", "0.00", "0.00", "0.00"],
+        ["33.33", "16.67", "50.00", "50.00", "25.00", "0.00", "0.00", "0.00"],
+        ["0.00"] * 8,
+        ["66.67", "33.33", "100.00", "100.00", "50.00", "0.00", "0.00", "0.00"],
+        ["33.33", "50.00", "50.00", "100.00", "25.00", "0.00", "0.00", "--"],
+        ["33.33", "50.00", "50.00", "100.00", "25.00", "0.00", "0.00", "--"],
+        ["0.00", "50.00", "0.00", "100.00", "0.00", "0.00", "0.00", "--"],
+        ["66.67", "50.00", "100.00", "100.00", "50.00", "0.00", "0.00", "--"],
+    ]
+    assert summary.model_dump() == original
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("completed", [True, False])
+def test_empty_phase_and_uncompleted_phase_metrics_display_placeholders(
+    mocker, completed
+):
+    """Keep empty reasoning and unavailable completed statistics undefined.
+
+    ## WRITTEN BY AI ##
+    """
+    requests = [_phase_request([0, 0], 0)]
+    summary = SpeculativeDecodingSummary.compile(
+        requests if completed else [], [] if completed else requests, []
+    )
+    output = GenerativeBenchmarkerConsole()
+    mocker.patch.object(output.console, "print")
+    table = mocker.patch.object(output.console, "print_table")
+    results = report(_benchmark(summary))
+
+    output.print_speculative_decoding_table(results)
+    output.print_speculative_positions_table(results)
+
+    overall = table.call_args_list[0].args[1]
+    assert overall[1] == ["Overall", "Reasoning", "Output"]
+    assert overall[2:6] == [["1.00", "--", "1.00"] if completed else ["--"] * 3] * 4
+    assert overall[6:10] == [["0.00", "--", "0.00"] if completed else ["--"] * 3] * 4
+    positions = table.call_args_list[1].args[1]
+    assert positions[1] == ["Overall", "", "Reasoning", "", "Output", ""]
+    assert (
+        positions[3:7]
+        == [["0.00", "0.00", "--", "--", "0.00", "0.00"] if completed else ["--"] * 6]
+        * 4
+    )
+    assert (
+        positions[7:11]
+        == [["0.00", "--", "--", "--", "0.00", "--"] if completed else ["--"] * 6] * 4
+    )
 
 
 @pytest.mark.regression
@@ -176,11 +308,11 @@ def test_zero_and_undefined_acceptance_are_distinct(mocker, completed):
     output.print_speculative_positions_table(results)
 
     overall = table.call_args_list[0].args[1]
-    assert overall[1:5] == [["1.00" if completed else "--"]] * 4
-    assert overall[5:9] == [["0.00" if completed else "--"]] * 4
+    assert overall[2:6] == [["1.00" if completed else "--"]] * 4
+    assert overall[6:10] == [["0.00" if completed else "--"]] * 4
     positions = table.call_args_list[1].args[1]
-    assert positions[2:6] == [["0.00" if completed else "--"] * 2] * 4
-    assert positions[6:10] == [["0.00" if completed else "--", "--"]] * 4
+    assert positions[3:7] == [["0.00" if completed else "--"] * 2] * 4
+    assert positions[7:11] == [["0.00" if completed else "--", "--"]] * 4
 
 
 @pytest.mark.regression
