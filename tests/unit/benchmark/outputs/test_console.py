@@ -103,7 +103,7 @@ async def test_finalize_prints_summary_with_pooled_and_per_request_statistics(mo
     ]
     assert values == [
         [str(measured.config.strategy), str(other.config.strategy)],
-        ["Overall", "Overall"],
+        ["Total", "Total"],
         *[
             [value, value]
             for value in (
@@ -152,7 +152,6 @@ def test_position_table_orders_positions_and_groups_benchmarks(mocker):
     headers, values = table.call_args.args
     assert headers == [
         ["Benchmark", "Strategy", ""],
-        ["Benchmark", "Phase", ""],
         ["Draft", "Position", ""],
         *[
             ["Cumulative Acceptance", "%", stat]
@@ -165,7 +164,6 @@ def test_position_table_orders_positions_and_groups_benchmarks(mocker):
     ]
     assert values == [
         [str(measured.config.strategy), "", str(other.config.strategy), ""],
-        ["Overall", "", "Overall", ""],
         ["1", "2", "1", "2"],
         ["10.00"] * 4,
         ["25.00"] * 4,
@@ -181,7 +179,7 @@ def test_position_table_orders_positions_and_groups_benchmarks(mocker):
 
 @pytest.mark.regression
 def test_phase_tables_show_completed_statistics_and_group_mixed_benchmarks(mocker):
-    """Render all four phase metrics and preserve overall-only benchmark alignment.
+    """Put Total last in the summary and render overall-only draft positions.
 
     ## WRITTEN BY AI ##
     """
@@ -214,38 +212,28 @@ def test_phase_tables_show_completed_statistics_and_group_mixed_benchmarks(mocke
     overall = table.call_args_list[0].args[1]
     assert overall == [
         [str(measured.config.strategy), "", "", str(legacy.config.strategy)],
-        ["Overall", "Reasoning", "Output", "Overall"],
-        ["1.50", "2.00", "1.25", "1.00"],
-        ["1.50", "2.00", "1.25", "1.00"],
+        ["Reasoning", "Output", "Total", "Total"],
+        ["2.00", "1.25", "1.50", "1.00"],
+        ["2.00", "1.25", "1.50", "1.00"],
         ["1.00", "1.00", "1.00", "1.00"],
-        ["2.00", "3.00", "1.50", "1.00"],
-        ["25.00", "50.00", "12.50", "0.00"],
-        ["25.00", "50.00", "12.50", "0.00"],
+        ["3.00", "1.50", "2.00", "1.00"],
+        ["50.00", "12.50", "25.00", "0.00"],
+        ["50.00", "12.50", "25.00", "0.00"],
         ["0.00", "0.00", "0.00", "0.00"],
-        ["50.00", "100.00", "25.00", "0.00"],
+        ["100.00", "25.00", "50.00", "0.00"],
     ]
     positions = table.call_args_list[1].args[1]
     assert positions == [
-        [
-            str(measured.config.strategy),
-            "",
-            "",
-            "",
-            "",
-            "",
-            str(legacy.config.strategy),
-            "",
-        ],
-        ["Overall", "", "Reasoning", "", "Output", "", "Overall", ""],
-        ["1", "2"] * 4,
-        ["33.33", "16.67", "50.00", "50.00", "25.00", "0.00", "0.00", "0.00"],
-        ["33.33", "16.67", "50.00", "50.00", "25.00", "0.00", "0.00", "0.00"],
-        ["0.00"] * 8,
-        ["66.67", "33.33", "100.00", "100.00", "50.00", "0.00", "0.00", "0.00"],
-        ["33.33", "50.00", "50.00", "100.00", "25.00", "0.00", "0.00", "--"],
-        ["33.33", "50.00", "50.00", "100.00", "25.00", "0.00", "0.00", "--"],
-        ["0.00", "50.00", "0.00", "100.00", "0.00", "0.00", "0.00", "--"],
-        ["66.67", "50.00", "100.00", "100.00", "50.00", "0.00", "0.00", "--"],
+        [str(measured.config.strategy), "", str(legacy.config.strategy), ""],
+        ["1", "2"] * 2,
+        ["33.33", "16.67", "0.00", "0.00"],
+        ["33.33", "16.67", "0.00", "0.00"],
+        ["0.00"] * 4,
+        ["66.67", "33.33", "0.00", "0.00"],
+        ["33.33", "50.00", "0.00", "--"],
+        ["33.33", "50.00", "0.00", "--"],
+        ["0.00", "50.00", "0.00", "--"],
+        ["66.67", "50.00", "0.00", "--"],
     ]
     assert summary.model_dump() == original
 
@@ -272,20 +260,13 @@ def test_empty_phase_and_uncompleted_phase_metrics_display_placeholders(
     output.print_speculative_positions_table(results)
 
     overall = table.call_args_list[0].args[1]
-    assert overall[1] == ["Overall", "Reasoning", "Output"]
-    assert overall[2:6] == [["1.00", "--", "1.00"] if completed else ["--"] * 3] * 4
-    assert overall[6:10] == [["0.00", "--", "0.00"] if completed else ["--"] * 3] * 4
+    assert overall[1] == ["Reasoning", "Output", "Total"]
+    assert overall[2:6] == [["--", "1.00", "1.00"] if completed else ["--"] * 3] * 4
+    assert overall[6:10] == [["--", "0.00", "0.00"] if completed else ["--"] * 3] * 4
     positions = table.call_args_list[1].args[1]
-    assert positions[1] == ["Overall", "", "Reasoning", "", "Output", ""]
-    assert (
-        positions[3:7]
-        == [["0.00", "0.00", "--", "--", "0.00", "0.00"] if completed else ["--"] * 6]
-        * 4
-    )
-    assert (
-        positions[7:11]
-        == [["0.00", "--", "--", "--", "0.00", "--"] if completed else ["--"] * 6] * 4
-    )
+    assert positions[1] == ["1", "2"]
+    assert positions[2:6] == [["0.00" if completed else "--"] * 2] * 4
+    assert positions[6:10] == [["0.00" if completed else "--", "--"]] * 4
 
 
 @pytest.mark.regression
@@ -311,8 +292,8 @@ def test_zero_and_undefined_acceptance_are_distinct(mocker, completed):
     assert overall[2:6] == [["1.00" if completed else "--"]] * 4
     assert overall[6:10] == [["0.00" if completed else "--"]] * 4
     positions = table.call_args_list[1].args[1]
-    assert positions[3:7] == [["0.00" if completed else "--"] * 2] * 4
-    assert positions[7:11] == [["0.00" if completed else "--", "--"]] * 4
+    assert positions[2:6] == [["0.00" if completed else "--"] * 2] * 4
+    assert positions[6:10] == [["0.00" if completed else "--", "--"]] * 4
 
 
 @pytest.mark.regression

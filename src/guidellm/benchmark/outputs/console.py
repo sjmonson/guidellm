@@ -657,15 +657,16 @@ class GenerativeBenchmarkerConsole(GenerativeBenchmarkerOutput):
             summary = benchmark.metrics.speculative_decoding
             if summary is None:
                 continue
+            first_row = True
             for phase, metrics in (
-                ("Overall", summary),
                 ("Reasoning", summary.reasoning),
                 ("Output", summary.content),
+                ("Total", summary),
             ):
                 if metrics is None:
                     continue
                 columns.add_value(
-                    str(benchmark.config.strategy) if phase == "Overall" else "",
+                    str(benchmark.config.strategy) if first_row else "",
                     group="Benchmark",
                     name="Strategy",
                     type_="text",
@@ -677,6 +678,7 @@ class GenerativeBenchmarkerConsole(GenerativeBenchmarkerOutput):
                 self._add_speculative_metric_columns(
                     columns, metrics.acceptance_rate, "Draft Acceptance Rate", "%"
                 )
+                first_row = False
         if not columns:
             return
         headers, values = columns.get_table_data()
@@ -691,7 +693,7 @@ class GenerativeBenchmarkerConsole(GenerativeBenchmarkerOutput):
         self, report: GenerativeBenchmarksReport
     ) -> None:
         """
-        Print overall and phase cumulative and conditional acceptance by draft position.
+        Print overall cumulative and conditional acceptance by draft position.
 
         :param report: The benchmark report containing optional speculative summaries
         """
@@ -700,45 +702,28 @@ class GenerativeBenchmarkerConsole(GenerativeBenchmarkerOutput):
             summary = benchmark.metrics.speculative_decoding
             if summary is None:
                 continue
-            first_row = True
-            for phase, metrics in (
-                ("Overall", summary),
-                ("Reasoning", summary.reasoning),
-                ("Output", summary.content),
-            ):
-                if metrics is None:
-                    continue
-                for index, position in enumerate(sorted(metrics.cumulative_acceptance)):
-                    columns.add_value(
-                        str(benchmark.config.strategy) if first_row else "",
-                        group="Benchmark",
-                        name="Strategy",
-                        type_="text",
-                    )
-                    columns.add_value(
-                        phase if index == 0 else "",
-                        group="Benchmark",
-                        name="Phase",
-                        type_="text",
-                    )
-                    columns.add_value(
-                        position, group="Draft", name="Position", precision=0
-                    )
-                    self._add_speculative_metric_columns(
-                        columns,
-                        metrics.cumulative_acceptance[position],
-                        "Cumulative Acceptance",
-                        "%",
-                        scale=100.0,
-                    )
-                    self._add_speculative_metric_columns(
-                        columns,
-                        metrics.conditional_acceptance[position],
-                        "Conditional Acceptance",
-                        "%",
-                        scale=100.0,
-                    )
-                    first_row = False
+            for index, position in enumerate(sorted(summary.cumulative_acceptance)):
+                columns.add_value(
+                    str(benchmark.config.strategy) if index == 0 else "",
+                    group="Benchmark",
+                    name="Strategy",
+                    type_="text",
+                )
+                columns.add_value(position, group="Draft", name="Position", precision=0)
+                self._add_speculative_metric_columns(
+                    columns,
+                    summary.cumulative_acceptance[position],
+                    "Cumulative Acceptance",
+                    "%",
+                    scale=100.0,
+                )
+                self._add_speculative_metric_columns(
+                    columns,
+                    summary.conditional_acceptance[position],
+                    "Conditional Acceptance",
+                    "%",
+                    scale=100.0,
+                )
         if not columns:
             return
         headers, values = columns.get_table_data()
