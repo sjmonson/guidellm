@@ -406,8 +406,8 @@ class TestResponseMetricsPassthrough:
     @pytest.mark.regression
     @pytest.mark.parametrize("streaming", [True, False])
     @pytest.mark.parametrize("level", ["summary", "detailed", "detailed_reasoning"])
-    def test_server_fixtures_metrics(self, streaming, level):
-        """Real server payloads preserve usage and response metrics through replay.
+    def test_server_fixtures_phase_metrics(self, streaming, level):
+        """Real server payloads preserve usage and all phase ratios through replay.
 
         ## WRITTEN BY AI ##
         """
@@ -443,10 +443,52 @@ class TestResponseMetricsPassthrough:
             ),
         )
         restored = GenerativeRequestStats.model_validate_json(stats.model_dump_json())
+        metrics = restored.speculative_decoding
+        assert metrics == stats.speculative_decoding
         assert (
             stats.response_metrics.model_dump(exclude_unset=True) == payload["metrics"]
         )
         assert restored.response_metrics == stats.response_metrics
+        if level == "summary":
+            assert metrics.reasoning is None
+            assert metrics.content is None
+            return
+        reasoning, content = metrics.reasoning, metrics.content
+        if level == "detailed":
+            assert reasoning.num_spec_steps == 0
+            assert reasoning.acceptance_rate is None
+            assert content.num_spec_steps == 79
+            assert content.acceptance_length == metrics.acceptance_length
+            assert content.acceptance_rate == metrics.acceptance_rate
+            assert content.cumulative_acceptance == metrics.cumulative_acceptance
+            assert content.conditional_acceptance == metrics.conditional_acceptance
+        else:
+            # Reconstructed step 102 starts at offset 158 and crosses the boundary
+            # at 160; step 103 starts at 162 and belongs to content.
+            assert reasoning.num_spec_steps == 102
+            assert reasoning.num_accepted_draft_tokens == 59
+            assert reasoning.num_draft_tokens == 306
+            assert reasoning.acceptance_histogram == [64, 23, 9, 6]
+            assert reasoning.acceptance_length == pytest.approx(161 / 102)
+            assert reasoning.acceptance_rate == pytest.approx(100 * 59 / 306)
+            assert reasoning.cumulative_acceptance == pytest.approx(
+                {1: 38 / 102, 2: 15 / 102, 3: 6 / 102}
+            )
+            assert reasoning.conditional_acceptance == pytest.approx(
+                {1: 38 / 102, 2: 15 / 38, 3: 6 / 15}
+            )
+            assert content.num_spec_steps == 14
+            assert content.num_accepted_draft_tokens == 21
+            assert content.num_draft_tokens == 42
+            assert content.acceptance_histogram == [3, 5, 2, 4]
+            assert content.acceptance_length == 2.5
+            assert content.acceptance_rate == 50
+            assert content.cumulative_acceptance == pytest.approx(
+                {1: 11 / 14, 2: 6 / 14, 3: 4 / 14}
+            )
+            assert content.conditional_acceptance == pytest.approx(
+                {1: 11 / 14, 2: 6 / 11, 3: 4 / 6}
+            )
 
     @pytest.mark.regression
     @pytest.mark.parametrize("reasoning", [None, 0, 5])
@@ -478,8 +520,8 @@ class TestResponseMetricsPassthrough:
     @pytest.mark.parametrize(
         "handler_type", [TextCompletionsRequestHandler, ChatCompletionsRequestHandler]
     )
-    def test_server_metrics_survive_stats_compilation(self, streaming, handler_type):
-        """Final streamed and non-streamed vLLM metrics survive stats compilation.
+    def test_derived_metrics_survive_stats_compilation(self, streaming, handler_type):
+        """Final streamed and non-streamed vLLM counters feed shared calculations.
 
         ## WRITTEN BY AI ##
         """
@@ -520,6 +562,10 @@ class TestResponseMetricsPassthrough:
             stats.response_metrics.speculative_decoding, VLLMSpeculativeDecodingMetrics
         )
         assert stats.response_metrics.model_dump(exclude_unset=True) == metrics
+        assert stats.speculative_decoding is not None
+        assert stats.speculative_decoding.acceptance_length == 2.5
+        assert stats.speculative_decoding.acceptance_rate == 50
+        assert stats.speculative_decoding.cumulative_acceptance == {1: 0.75, 2: 0.75}
 
     @pytest.mark.regression
     def test_metrics_validation_failure_warns(self, logot: Logot):

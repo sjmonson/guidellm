@@ -14,6 +14,7 @@ from guidellm.schemas import (
     GenerativeRequestStats,
     RequestInfo,
     RequestTimings,
+    SpeculativeDecodingMetrics,
     VLLMRequestMetrics,
     VLLMSpeculativeDecodingMetrics,
 )
@@ -70,6 +71,11 @@ def test_captured_metrics_round_trip(level):
     # Default serialization includes optional fields as null; reloading marks them
     # as supplied. Compare typed values rather than the original fields-set.
     assert restored.response_metrics == metrics
+    derived = restored.speculative_decoding
+    assert derived is not None
+    assert derived.acceptance_length == pytest.approx(109 / 79)
+    assert derived.acceptance_rate == pytest.approx(100 * 30 / 237)
+    assert derived.acceptance_tails == [24, 4, 2]
 
 
 @pytest.mark.regression
@@ -88,6 +94,10 @@ def test_timing_only_and_legacy_dictionary_inputs():
     assert response.response_metrics.time_to_first_token_ms is None
     assert response.response_metrics.model_dump(exclude_unset=True) == raw
     assert (
+        SpeculativeDecodingMetrics.from_response_metrics(response.response_metrics)
+        is None
+    )
+    assert (
         GenerationResponse.model_validate_json(
             response.model_dump_json()
         ).response_metrics
@@ -104,6 +114,7 @@ def test_timing_only_and_legacy_dictionary_inputs():
     )
     assert isinstance(stats.response_metrics, VLLMRequestMetrics)
     assert stats.response_metrics.model_dump(exclude_unset=True) == raw
+    assert stats.speculative_decoding is None
 
 
 @pytest.mark.regression

@@ -14,6 +14,7 @@ from guidellm.benchmark.schemas.metrics import (
     GenerativeMetricsSummary,
     GenerativeToolCallMetricsSummary,
     SchedulerMetrics,
+    SpeculativeDecodingSummary,
 )
 from guidellm.scheduler import (
     AsyncConstantStrategy,
@@ -26,8 +27,208 @@ from guidellm.schemas import (
     RequestInfo,
     RequestTimings,
     UsageMetrics,
+    VLLMRequestMetrics,
 )
 from guidellm.schemas.benchmark import GoodputSLO
+
+
+def _speculative_stats(
+    request_id: str,
+    steps: int,
+    accepted: int,
+    drafted: int,
+    histogram: list[int] | None,
+) -> GenerativeRequestStats:
+    """Build a request carrying raw vLLM acceptance counters."""
+    stats = _make_scheduled_stats(request_id, 11, 11, 12)
+    stats.response_metrics = VLLMRequestMetrics.model_validate(
+        {
+            "speculative_decoding": {
+                "num_spec_steps": steps,
+                "num_accepted_draft_tokens": accepted,
+                "num_draft_tokens": drafted,
+                "acceptance_histogram": histogram,
+            }
+        }
+    )
+    return stats
+
+
+@pytest.mark.regression
+def test_speculative_pooling_and_equal_request_means():
+    """Unequal request lengths distinguish counter pooling from request averaging.
+
+    ## WRITTEN BY AI ##
+    """
+    summary = SpeculativeDecodingSummary.compile(
+        [_speculative_stats("a", 2, 2, 4, [1, 0, 1])],
+        [_speculative_stats("b", 8, 0, 16, [8, 0])],
+        [],
+    )
+    assert summary is not None
+    assert summary.acceptance_length.pooled.total == pytest.approx(1.2)
+    assert summary.acceptance_length.per_request.total.mean == 1.5
+    assert summary.acceptance_rate.pooled.total == 10
+    assert summary.acceptance_rate.per_request.total.mean == 25
+    assert summary.acceptance_rate.pooled.successful == 50
+    assert summary.acceptance_rate.pooled.incomplete == 0
+    assert summary.acceptance_rate.pooled.errored is None
+    assert summary.acceptance_rate.per_request.errored.count == 0
+    assert summary.cumulative_acceptance[1].pooled.total == pytest.approx(0.1)
+    assert summary.cumulative_acceptance[2].pooled.total == pytest.approx(0.1)
+    assert summary.cumulative_acceptance[2].per_request.total.mean == 0.25
+    assert summary.conditional_acceptance[1].pooled.total == pytest.approx(0.1)
+    assert summary.conditional_acceptance[2].pooled.total == 1
+    assert summary.conditional_acceptance[2].per_request.total.count == 1
+
+
+@pytest.mark.regression
+def test_speculative_conditional_weighting():
+    """Conditional pooling weights requests by their preceding acceptance tails.
+
+    ## WRITTEN BY AI ##
+    """
+    summary = SpeculativeDecodingSummary.compile(
+        [_speculative_stats("a", 2, 2, 4, [1, 0, 1])],
+        [],
+        [_speculative_stats("b", 10, 8, 20, [2, 8, 0])],
+    )
+    assert summary is not None
+    conditional = summary.conditional_acceptance[2]
+    assert conditional.pooled.total == pytest.approx(1 / 9)
+    assert conditional.per_request.total.mean == 0.5
+    assert conditional.per_request.total.count == 2
+    assert conditional.pooled.errored == 0
+
+
+@pytest.mark.regression
+def test_speculative_metric_specific_populations():
+    """Missing fields never add unmatched denominators to pooled metrics.
+
+    ## WRITTEN BY AI ##
+    """
+    valid = _speculative_stats("valid", 2, 2, 4, [1, 0, 1, 0])
+    no_histogram = _speculative_stats("no-histogram", 100, 100, 100, None)
+    no_accepted = _speculative_stats("no-accepted", 1000, 0, 1000, None)
+    no_accepted.response_metrics.speculative_decoding.num_accepted_draft_tokens = None
+    zero = _speculative_stats("zero", 0, 0, 0, [0, 0, 0, 0])
+    missing = _make_scheduled_stats("missing", 11, 11, 12)
+    summary = SpeculativeDecodingSummary.compile(
+        [valid, no_accepted, missing], [zero], [no_histogram]
+    )
+    assert summary is not None
+    assert summary.acceptance_length.pooled.total == 2
+    assert summary.acceptance_rate.pooled.total == pytest.approx(100 * 102 / 104)
+    assert summary.acceptance_rate.per_request.total.count == 2
+    assert summary.acceptance_length.per_request.incomplete.count == 0
+    assert summary.cumulative_acceptance[1].pooled.total == 0.5
+    assert summary.cumulative_acceptance[1].per_request.total.count == 1
+    assert summary.cumulative_acceptance[3].pooled.total == 0
+    assert summary.conditional_acceptance[3].pooled.total == 0
+    assert SpeculativeDecodingSummary.compile([missing], [], []) is None
+
+
+@pytest.mark.regression
+def test_speculative_window_and_result_round_trip():
+    """Use the request measurement window and preserve optional-schema compatibility.
+
+    ## WRITTEN BY AI ##
+    """
+    included = _speculative_stats("included", 2, 2, 4, [1, 0, 1])
+    included.info.timings.request_start = 9
+    outside = _speculative_stats("outside", 100, 0, 100, [100, 0])
+    outside.info.timings.request_start = 30
+    outside.info.timings.request_end = 31
+    outside.info.timings.resolve_end = 31
+    metrics = GenerativeMetrics.compile(_make_accumulator([included, outside], 10, 20))
+    assert metrics.speculative_decoding is not None
+    assert metrics.speculative_decoding.acceptance_rate.pooled.total == 50
+    restored = GenerativeMetrics.model_validate_json(metrics.model_dump_json())
+    assert restored.speculative_decoding == metrics.speculative_decoding
+    assert restored.speculative_decoding.cumulative_acceptance[2].pooled.total == 0.5
+    legacy = metrics.model_dump(exclude={"speculative_decoding"})
+    assert GenerativeMetrics.model_validate(legacy).speculative_decoding is None
+
+
+def _phase_stats(request_id, accepted, drafted, reasoning, output):
+    """Build request counters with a reconstructed reasoning prefix."""
+    width = max(drafted, default=0)
+    stats = _speculative_stats(
+        request_id,
+        len(accepted),
+        sum(accepted),
+        sum(drafted),
+        [accepted.count(j) for j in range(width + 1)],
+    )
+    stats.output_metrics = UsageMetrics(text_tokens=output, reasoning_tokens=reasoning)
+    raw = stats.response_metrics.speculative_decoding
+    raw.per_step_accepted = accepted
+    raw.per_step_drafted = drafted
+    raw.num_spec_tokens = width
+    return stats
+
+
+@pytest.mark.regression
+def test_phase_pooling_statuses_and_missing_populations():
+    """Pool only matching phase counters and weight per-request ratios equally.
+
+    ## WRITTEN BY AI ##
+    """
+    # Reasoning: a=(S=1,A=2,D=2), b=(S=3,A=0,D=6).
+    # Content: a=(S=1,A=0,D=2), c=(S=1,A=1,D=1).
+    a = _phase_stats("a", [2, 0], [2, 2], 4, 5)
+    b = _phase_stats("b", [0, 0, 0], [2, 2, 2], 4, 4)
+    c = _phase_stats("c", [1], [1], 0, 3)
+    missing = _speculative_stats("summary", 100, 100, 100, [0, 100])
+    unknown = _phase_stats("unknown", [1], [1], None, 3)
+    summary = SpeculativeDecodingSummary.compile([a, missing, unknown], [b], [c])
+    reasoning, content = summary.reasoning, summary.content
+    assert reasoning.acceptance_length.pooled.total == 1.5
+    assert reasoning.acceptance_length.per_request.total.mean == 2
+    assert reasoning.acceptance_rate.pooled.total == 25
+    assert reasoning.acceptance_rate.per_request.total.mean == 50
+    assert reasoning.acceptance_rate.per_request.total.count == 2
+    assert reasoning.acceptance_rate.pooled.successful == 100
+    assert reasoning.acceptance_rate.pooled.incomplete == 0
+    assert reasoning.acceptance_rate.pooled.errored is None
+    assert reasoning.acceptance_rate.per_request.errored.count == 0
+    assert reasoning.cumulative_acceptance[2].pooled.total == 0.25
+    assert reasoning.cumulative_acceptance[2].per_request.total.mean == 0.5
+    assert reasoning.conditional_acceptance[2].pooled.total == 1
+    assert reasoning.conditional_acceptance[2].per_request.total.count == 1
+    assert content.acceptance_length.pooled.total == 1.5
+    assert content.acceptance_rate.pooled.total == pytest.approx(100 / 3)
+    assert content.acceptance_rate.per_request.total.mean == 50
+    assert content.acceptance_rate.per_request.total.count == 2
+    assert content.acceptance_rate.pooled.successful == 0
+    assert content.acceptance_rate.pooled.incomplete is None
+    assert content.acceptance_rate.pooled.errored == 100
+    assert content.cumulative_acceptance[2].pooled.total == 0
+    assert content.conditional_acceptance[2].pooled.total == 0
+
+
+@pytest.mark.regression
+def test_phase_window_and_legacy_round_trip():
+    """Persist phase summaries with the existing window and legacy loading contracts.
+
+    ## WRITTEN BY AI ##
+    """
+    included = _phase_stats("included", [2, 0], [2, 2], 4, 5)
+    included.info.timings.request_start = 9
+    outside = _phase_stats("outside", [0], [100], 3, 3)
+    outside.info.timings.request_start = 30
+    outside.info.timings.request_end = outside.info.timings.resolve_end = 31
+    metrics = GenerativeMetrics.compile(_make_accumulator([included, outside], 10, 20))
+    summary = metrics.speculative_decoding
+    assert summary.reasoning.acceptance_rate.pooled.total == 100
+    assert summary.content.acceptance_rate.pooled.total == 0
+    restored = GenerativeMetrics.model_validate_json(metrics.model_dump_json())
+    assert restored.speculative_decoding == summary
+    legacy = summary.model_dump(exclude={"reasoning", "content"})
+    restored_summary = SpeculativeDecodingSummary.model_validate(legacy)
+    assert restored_summary.reasoning is None
+    assert restored_summary.content is None
+    assert restored_summary.acceptance_rate == summary.acceptance_rate
 
 
 def _make_errored_tool_call_stats(request_id: str) -> GenerativeRequestStats:

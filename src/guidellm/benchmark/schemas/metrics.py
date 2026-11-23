@@ -11,6 +11,7 @@ performance metrics for request processing and queueing behavior.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import Field, computed_field
@@ -23,6 +24,7 @@ from guidellm.schemas import (
     DistributionSummary,
     GenerativeRequestStats,
     SampleUncertainty,
+    SpeculativeAcceptanceMetrics,
     StandardBaseDict,
     StandardBaseModel,
     StatusBreakdown,
@@ -41,6 +43,9 @@ __all__ = [
     "GenerativeVideoMetricsSummary",
     "SLOAttainmentSummary",
     "SchedulerMetrics",
+    "SpeculativeAcceptanceSummary",
+    "SpeculativeDecodingSummary",
+    "SpeculativeMetricSummary",
     "StatusTypes",
     "TimedMetricTypeAlias",
 ]
@@ -1041,6 +1046,173 @@ class SLOAttainmentSummary(StandardBaseModel):
         return self.conforming_requests / self.determined_requests
 
 
+class SpeculativeMetricSummary(StandardBaseModel):
+    """Counter-pooled ratios and equally weighted per-request distributions."""
+
+    pooled: StatusBreakdown[float | None, float | None, float | None, float | None]
+    per_request: StatusDistributionSummary
+
+    @classmethod
+    def compile(
+        cls,
+        groups: list[list[SpeculativeAcceptanceMetrics]],
+        counts: Callable[[SpeculativeAcceptanceMetrics], tuple[int, int] | None],
+    ) -> SpeculativeMetricSummary:
+        """
+        Compile ratios using matched numerators and denominators.
+
+        :param groups: Successful, incomplete, and errored request counters
+        :param counts: Extract numerator and denominator; None skips the request
+        :return: Pooled and per-request results, excluding zero denominators
+        """
+        pairs = [
+            [
+                pair
+                for item in group
+                if (pair := counts(item)) is not None and pair[1] > 0
+            ]
+            for group in groups
+        ]
+
+        def pooled(values: list[tuple[int, int]]) -> float | None:
+            denominator = sum(pair[1] for pair in values)
+            return (
+                sum(pair[0] for pair in values) / denominator if denominator else None
+            )
+
+        return cls(
+            pooled=StatusBreakdown(
+                successful=pooled(pairs[0]),
+                incomplete=pooled(pairs[1]),
+                errored=pooled(pairs[2]),
+                total=pooled([pair for group in pairs for pair in group]),
+            ),
+            per_request=StatusDistributionSummary.from_values(
+                successful=[a / b for a, b in pairs[0]],
+                incomplete=[a / b for a, b in pairs[1]],
+                errored=[a / b for a, b in pairs[2]],
+            ),
+        )
+
+
+class SpeculativeAcceptanceSummary(StandardBaseModel):
+    """Shared overall or phase-specific acceptance aggregations."""
+
+    acceptance_length: SpeculativeMetricSummary
+    acceptance_rate: SpeculativeMetricSummary = Field(
+        description="Acceptance percentage"
+    )
+    cumulative_acceptance: dict[int, SpeculativeMetricSummary] = Field(
+        description="Fractions accepting at least each one-based draft position"
+    )
+    conditional_acceptance: dict[int, SpeculativeMetricSummary] = Field(
+        description="Fractions accepting each position given acceptance of the previous"
+    )
+
+    @classmethod
+    def from_counters(
+        cls,
+        groups: list[list[SpeculativeAcceptanceMetrics]],
+    ) -> SpeculativeAcceptanceSummary | None:
+        """
+        Compile supported request counters, computing histogram tails once.
+
+        :param groups: Successful, incomplete, and errored request counters
+        :return: Summary, or None when no supported counters were reported
+        """
+        if not any(groups):
+            return None
+        max_position = max(
+            (len(item.acceptance_tails or []) for group in groups for item in group),
+            default=0,
+        )
+
+        def length_counts(item: SpeculativeAcceptanceMetrics) -> tuple[int, int] | None:
+            if item.num_accepted_draft_tokens is None or item.num_spec_steps is None:
+                return None
+            return (
+                item.num_spec_steps + item.num_accepted_draft_tokens,
+                item.num_spec_steps,
+            )
+
+        def rate_counts(item: SpeculativeAcceptanceMetrics) -> tuple[int, int] | None:
+            if item.num_accepted_draft_tokens is None or item.num_draft_tokens is None:
+                return None
+            return 100 * item.num_accepted_draft_tokens, item.num_draft_tokens
+
+        def positions(conditional: bool) -> dict[int, SpeculativeMetricSummary]:
+            summaries = {}
+            for position in range(1, max_position + 1):
+
+                def counts(
+                    item: SpeculativeAcceptanceMetrics, position: int = position
+                ) -> tuple[int, int] | None:
+                    if item.acceptance_tails is None:
+                        return None
+                    return item.position_counts(position, conditional=conditional)
+
+                summaries[position] = SpeculativeMetricSummary.compile(groups, counts)
+            return summaries
+
+        return cls(
+            acceptance_length=SpeculativeMetricSummary.compile(groups, length_counts),
+            acceptance_rate=SpeculativeMetricSummary.compile(groups, rate_counts),
+            cumulative_acceptance=positions(False),
+            conditional_acceptance=positions(True),
+        )
+
+
+class SpeculativeDecodingSummary(SpeculativeAcceptanceSummary):
+    """Overall vLLM acceptance with optional reconstructed phase summaries."""
+
+    reasoning: SpeculativeAcceptanceSummary | None = Field(
+        default=None, description="Acceptance for steps attributed to reasoning"
+    )
+    content: SpeculativeAcceptanceSummary | None = Field(
+        default=None, description="Acceptance for steps attributed to content"
+    )
+
+    @classmethod
+    def compile(
+        cls,
+        successful: list[GenerativeRequestStats],
+        incomplete: list[GenerativeRequestStats],
+        errored: list[GenerativeRequestStats],
+    ) -> SpeculativeDecodingSummary | None:
+        """
+        Interpret each request once and aggregate overall and phase counters.
+
+        :param successful: Successful requests within the measurement window
+        :param incomplete: Incomplete requests within the measurement window
+        :param errored: Errored requests within the measurement window
+        :return: Summary, or None when no supported counters were reported
+        """
+        overall: list[list[SpeculativeAcceptanceMetrics]] = [[], [], []]
+        reasoning: list[list[SpeculativeAcceptanceMetrics]] = [[], [], []]
+        content: list[list[SpeculativeAcceptanceMetrics]] = [[], [], []]
+        for index, requests in enumerate((successful, incomplete, errored)):
+            for request in requests:
+                if (metrics := request.speculative_decoding) is None:
+                    continue
+                overall[index].append(metrics)
+                if metrics.reasoning is not None:
+                    reasoning[index].append(metrics.reasoning)
+                if metrics.content is not None:
+                    content[index].append(metrics.content)
+
+        summary = SpeculativeAcceptanceSummary.from_counters(overall)
+        if summary is None:
+            return None
+        return cls(
+            acceptance_length=summary.acceptance_length,
+            acceptance_rate=summary.acceptance_rate,
+            cumulative_acceptance=summary.cumulative_acceptance,
+            conditional_acceptance=summary.conditional_acceptance,
+            reasoning=SpeculativeAcceptanceSummary.from_counters(reasoning),
+            content=SpeculativeAcceptanceSummary.from_counters(content),
+        )
+
+
 class GenerativeMetrics(StandardBaseDict):
     """
     Comprehensive metrics for generative AI benchmarks.
@@ -1051,6 +1223,11 @@ class GenerativeMetrics(StandardBaseDict):
     throughput, latency, concurrency, and resource utilization metrics across
     successful, incomplete, and errored requests.
     """
+
+    speculative_decoding: SpeculativeDecodingSummary | None = Field(
+        default=None,
+        description="Optional vLLM pooled and per-request speculative decoding metrics",
+    )
 
     # Request stats
     request_totals: StatusBreakdown[int, int, int, int] = Field(
@@ -1473,6 +1650,9 @@ class GenerativeMetrics(StandardBaseDict):
         )
 
         return GenerativeMetrics(
+            speculative_decoding=SpeculativeDecodingSummary.compile(
+                successful=successful, incomplete=incomplete, errored=errored
+            ),
             slo_attainment=slo_attainment,
             slo_determined_requests=slo_determined,
             request_goodput=request_goodput,
