@@ -35,6 +35,68 @@ These metrics provide a breakdown of the overall request statuses, helping users
 - **Availability**: A request has a hit rate only when the server reported a cached token count for it and its prompt token count is above zero. A cached token count of zero is a hit rate of zero and counts toward the statistics. A benchmark with no such completed request shows `--` in the console. vLLM's chat completions and completions endpoints report the cached token count only when the server is started with `--enable-prompt-tokens-details`. Before vLLM 0.24.0 they left out a count of zero, so the statistics then cover only the requests with a cache hit.
 - **Use Case**: Shows how much prefill the server skipped. Multi-turn and shared-prefix workloads reuse a prefix by design, so a high rate is expected there. On other workloads a high rate means the server had a large share of the prompt tokens in its cache from earlier requests, for example from an earlier run with the same `--seed`, so the latencies include that saving.
 
+## Server-Reported Request Metrics
+
+GuideLLM parses the vLLM response's `metrics` object in the OpenAI backend into a `VLLMRequestMetrics` Pydantic model. This model is retained in `GenerationResponse.response_metrics` and `GenerativeRequestStats.response_metrics` and serialized as a JSON object in saved results. Known timing fields include `time_to_first_token_ms`, `generation_time_ms`, `queue_time_ms`, `mean_itl_ms`, and `tokens_per_second`, reported by vLLM when `--enable-per-request-metrics` is enabled. These server-reported values are captured separately from GuideLLM's client-side latency measurements.
+
+The nested `speculative_decoding` object is a `VLLMSpeculativeDecodingMetrics` model, including typed `num_spec_tokens`, `per_step_accepted`, and `per_step_drafted` fields for detailed responses. Both models allow and preserve additional fields. Optional fields default to `None` when absent. Existing dictionary-shaped saved metrics load into the typed models automatically; Python callers can use `.model_dump(exclude_unset=True)` to retrieve only supplied fields. Known speculative counters, histogram entries, and per-step array entries are validated as nonnegative integers at ingestion.
+
+## Speculative Decoding Metrics
+
+When vLLM reports `metrics.speculative_decoding` in request responses, GuideLLM derives speculative decoding metrics in the structured benchmark results at `metrics.speculative_decoding`. Enable vLLM's `--per-request-spec-decode-metrics summary` (or `detailed`) setting. For streaming responses, usage reporting must also be enabled with `stream_options.include_usage: true` or the server's `--enable-force-include-usage` option. These metrics use request response data, rather than Prometheus scrape totals.
+
+For request `i`, let `S_i` be `num_spec_steps`, `A_i` be `num_accepted_draft_tokens`, and `D_i` be `num_draft_tokens`. The accepted and proposed counts exclude bonus tokens. The dense `acceptance_histogram[j]` counts verification steps accepting exactly `j` draft tokens. Define `T_i(k)` as its tail sum from index `k` onward, with `T_i(0) = S_i`.
+
+| Result field                | Pooled calculation            | Units                                                                    |
+| --------------------------- | ----------------------------- | ------------------------------------------------------------------------ |
+| `acceptance_length`         | `1 + sum(A_i) / sum(S_i)`     | Tokens per verification step, including the bonus token                  |
+| `acceptance_rate`           | `100 * sum(A_i) / sum(D_i)`   | Percent                                                                  |
+| `cumulative_acceptance[k]`  | `sum(T_i(k)) / sum(S_i)`      | Fraction accepting at least `k` draft tokens                             |
+| `conditional_acceptance[k]` | `sum(T_i(k)) / sum(T_i(k-1))` | Fraction accepting position `k`, given acceptance of preceding positions |
+
+Positions start at **1**. For the first conditional position, the denominator is all verification steps. Position keys are strings in JSON, for example `cumulative_acceptance["1"]`.
+
+Each field contains:
+
+- **`pooled`**: Ratios computed by summing matched counters first, broken down into `successful`, `incomplete`, `errored`, and `total`.
+- **`per_request`**: Distribution summaries for the same statuses. Each eligible request contributes one ratio with equal weight; `per_request.total.mean` is the per-request mean.
+
+For example, requests with `(S_i, A_i, D_i)` values `(2, 2, 4)` and `(8, 0, 16)` have pooled acceptance length **1.2** and pooled acceptance rate **10%**. Their equally weighted per-request means are **1.5** and **25%**, respectively.
+
+The console displays two tables after request-token statistics when speculative decoding summaries are available:
+
+- **Speculative Decoding Summary (Completed Requests)**: One row per available phase within each benchmark strategy, with pooled, per-request mean, median, and p95 values for acceptance length (tokens per verification step, including the bonus token) and draft acceptance rate (percent).
+- **Speculative Acceptance by Draft Position (Completed Requests)**: One row per draft position within each benchmark, using overall data only, with the same statistics for cumulative and conditional acceptance, both displayed as percentages. Positions are ordered numerically, and the strategy label appears on the first row of each benchmark block.
+
+Both tables use successful requests only and show two decimal places. In the Summary table, the **Phase** column lists **Reasoning** and **Output** when phase summaries are available, followed by **Total** for overall metrics. **Output** corresponds to the structured `content` section (non-reasoning output). Summary-only responses display **Total**. The draft-position table has no phase column or phase-specific rows. Benchmarks without speculative summaries are omitted. Undefined ratios and empty per-request distributions display as `--`.
+
+The summary uses the same measurement-window request selection as request latency: requests overlapping the window contribute their full reported counters, without prorating steps at the boundaries. Missing inputs and inconsistent counters are excluded separately for each metric. Scalar ratios remain available without a histogram. Position metrics require a valid histogram whose counts sum to the reported steps and, when available, whose weighted sum matches accepted draft tokens. Shorter histograms contribute zero tails beyond their last position.
+
+A zero numerator with a positive denominator is a measured zero. A zero denominator is undefined: pooled values are `null`, and undefined per-request values are excluded from distributions. An empty distribution has count zero and follows the common distribution schema's zero-valued summary statistics. The whole summary is `null` when no supported counters are available. Server data remains in each request's typed `response_metrics`; Python callers can access interpreted values through `GenerativeRequestStats.speculative_decoding`.
+
+### Reasoning and Content Acceptance
+
+With `--per-request-spec-decode-metrics detailed`, structured results also contain optional `metrics.speculative_decoding.reasoning` and `metrics.speculative_decoding.content` sections. Each has the same four acceptance fields, units, `pooled` status breakdowns, and equally weighted `per_request` distributions as the overall summary. Request-level counters and ratios are available through `GenerativeRequestStats.speculative_decoding.reasoning` and `.content`. The console Summary table displays these phases as **Reasoning** and **Output**, followed by **Total**. The draft-position table displays overall metrics only.
+
+Phase interpretation requires both detailed arrays, a reported completion count, and `usage.completion_tokens_details.reasoning_tokens`. The usage count is retained as `output_metrics.reasoning_tokens`, a subset of output text tokens that is not added again to token totals. The Responses API usage extractor also preserves `output_tokens_details.reasoning_tokens` when reported. Missing reasoning usage is distinct from a reported zero.
+
+**Phase attribution is a reconstructed approximation, using the phase at the start of each verification step.** GuideLLM treats the reported reasoning count as a contiguous prefix of the generated output. It assumes one initial non-speculative prefill token, so the first recorded step starts at zero-based output offset **1**. Each recorded step advances the offset by `per_step_accepted[j] + 1`, including the target-generated token. A step belongs to reasoning if its starting offset is less than `reasoning_tokens`; otherwise it belongs to content. The whole step contributes to its starting phase, even if it crosses the boundary. Content means non-reasoning output, including tool output when present.
+
+The payloads do not contain token offsets or phase labels. Reasoning delimiters may be excluded from reasoning usage, and iterations without drafts are not recorded in the detailed arrays. Such cases, or outputs that alternate reasoning and content, can shift the reconstructed boundary. These metrics describe acceptance of steps attributed under this convention, not an exact token-by-token phase split. No offset correction is inferred from the difference between completion usage and acceptance counters.
+
+The upstream vLLM scheduler records acceptance before applying terminal stop-token trimming. Consequently, accepted drafts plus one target token per step need not equal the emitted completion count. GuideLLM keeps the full step counters, including for the terminal step. See the upstream [acceptance metrics documentation](https://github.com/vllm-project/vllm/blob/main/docs/features/speculative_decoding/acceptance_metrics.md) and [scheduler implementation](https://github.com/vllm-project/vllm/blob/main/vllm/v1/core/sched/scheduler.py).
+
+For each phase, GuideLLM sums assigned steps, accepted drafts, and proposed drafts and builds an acceptance histogram. The four formulas above then apply to those phase-specific counters. Draft positions retain their original one-based positions within a step. Across attributable requests, reasoning and content counters partition the detailed counters; their ratios are not additive.
+
+For example, the supplied reasoning trace has 160 reasoning tokens out of 194 completion tokens. Under this convention, the step starting at offset 158 belongs to reasoning and the next step, at offset 162, belongs to content:
+
+| Phase     | Steps | Accepted drafts | Proposed drafts | Acceptance length | Acceptance rate  |
+| --------- | ----- | --------------- | --------------- | ----------------- | ---------------- |
+| Reasoning | 102   | 59              | 306             | `1 + 59 / 102`    | `100 * 59 / 306` |
+| Content   | 14    | 21              | 42              | `1 + 21 / 14`     | `50%`            |
+
+Detailed arrays must have matching lengths, accepted counts must not exceed proposed counts, and their totals and histogram must agree with any supplied summary counters. Missing or inconsistent phase inputs leave both phase sections `null` while preserving independently valid overall metrics. With valid details and zero reasoning usage, all steps belong to content. An attributable phase with no steps has zero counters and undefined ratios; it contributes no per-request ratio. Older saved results and summary-only responses continue to load with phase sections unavailable. Phase summaries use the same measurement-window selection as overall metrics.
+
 ## Performance Metrics
 
 ### Request Rate (Requests Per Second)
